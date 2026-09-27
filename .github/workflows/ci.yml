@@ -1,0 +1,26 @@
+name: Build and checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build all targets
+        run: swift build -c release
+      - name: Check CLI startup
+        run: swift run -c release clay --help
+      - name: Check Python syntax
+        run: python3 -m py_compile tools/convert_models.py tools/convert_age_models.py
+      - name: Check packaging script syntax
+        run: zsh -n scripts/make_app.sh

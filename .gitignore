@@ -1,0 +1,37 @@
+# Swift and packaged build output
+/.build/
+/.swiftpm/
+/build/
+
+# Local models, datasets, downloaded weights, and generated renders
+/Models/
+/data/archives/
+/data/datasets/
+/.cache/
+/out/
+*.zip
+# Legacy dataset location
+/Datasets/
+
+# Python and macOS housekeeping
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+
+# Local input photos (publish only deliberately selected, licensed examples)
+/examples/photos/*
+!/examples/photos/README.md
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor state
+.idea/
+.vscode/
+*.swp
+*.swo
