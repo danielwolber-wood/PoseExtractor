@@ -12,12 +12,22 @@ public struct ClayResult {
     public internal(set) var timings: [(String, TimeInterval)]
     /// Vision's horizon angle (radians; the rotation that levels the photo), if it found a horizon.
     public internal(set) var horizonAngle: Double? = nil
+    /// Where depth came from and the cached monocular estimate (reused by re-fits). nil for results
+    /// built before depth was decided.
+    public internal(set) var depth: DepthReport? = nil
+    /// Depth cues built for live (dragging) re-fits, per person, valid while the same joints are edited.
+    var liveDepthCues: [Int: (edited: [Bool], cue: MonocularDepthCue)] = [:]
 
     /// Drops a person (e.g. a false detection).
     public mutating func remove(person index: Int) {
         people.remove(at: index)
         bodies.remove(at: index)
         meshes.remove(at: index)
+        liveDepthCues = [:]
+        if var c = depth?.calibration, index < c.personScales.count {
+            c.personScales.remove(at: index)
+            depth?.calibration = c
+        }
     }
 
     public func makeScene(style: ClayStyle = ClayStyle()) -> ClayScene {
@@ -37,6 +47,17 @@ public final class ClayPipeline: @unchecked Sendable {
     /// shape on age and are shown for every model.
     public var ageModel: String?
     private var ageEstimators: [String: AgeEstimator] = [:]
+    /// Monocular depth when a photo has no embedded metric depth (see docs/depth.md). With no depth
+    /// model installed, `.automatic` does nothing.
+    public var monocularDepthMode: MonocularDepthMode = .automatic
+    /// When the selected backend isn't installed or fails, use another installed one.
+    public var monocularDepthFallback = true
+    /// Explicit model locations (file or directory) per backend, instead of searching.
+    public var depthModelPaths: [MonocularDepthBackend: URL] = [:]
+    /// Replaces the Core ML backend (tests, or depth computed elsewhere); counts as installed.
+    public var depthEstimatorOverride: (any MonocularDepthEstimating)?
+    var depthEstimators: [MonocularDepthBackend: CoreMLDepthEstimator] = [:]
+    let depthLock = NSLock()
 
     /// Converted age-estimation models, in display order.
     public var availableAgeModels: [AgeModelInfo] { AgeModelInfo.available(in: modelsDirectory) }
@@ -108,9 +129,17 @@ public final class ClayPipeline: @unchecked Sendable {
     public func run(image: LoadedImage, model modelID: String = ClayPipeline.defaultModelID,
                     ages: AgeInput = .none) throws -> ClayResult {
         let t0 = Date()
-        var people = try detector.detect(in: image)
+        // Monocular depth runs once per photo, alongside Vision (both on the Neural Engine / GPU).
+        let depthBox = DepthBox()
+        let depthGroup = DispatchGroup()
+        DispatchQueue.global(qos: .userInitiated).async(group: depthGroup) { depthBox.report = self.estimateDepth(for: image) }
+        let people0: [DetectedPerson]
+        do { people0 = try detector.detect(in: image) } catch { depthGroup.wait(); throw error }
+        var people = people0
         let horizon = detector.horizonAngle(in: image)
         let tDetect = Date().timeIntervalSince(t0)
+        depthGroup.wait()
+        let depth = depthBox.report
         let t1 = Date()
         estimateAges(&people, image: image)
         let tAge = Date().timeIntervalSince(t1)
@@ -121,9 +150,12 @@ public final class ClayPipeline: @unchecked Sendable {
             case .perPerson(let map): if let a = map[i] { people[i].ageOverride = a }
             }
         }
-        var result = try fit(people: people, image: image, model: modelID, horizonAngle: horizon)
-        result.timings.insert(("detect + 3D pose", tDetect), at: 0)
-        if ageModel != nil { result.timings.insert(("age estimation", tAge), at: 1) }
+        var result = try fit(people: people, image: image, model: modelID, horizonAngle: horizon, depth: depth)
+        var head = [("detect + 3D pose", tDetect)]
+        // Measured separately; it overlaps detection, so the stages sum to more than the wall-clock time.
+        if let depth, depth.estimate != nil { head.append(("monocular depth", depth.seconds)) }
+        if ageModel != nil { head.append(("age estimation", tAge)) }
+        result.timings.insert(contentsOf: head, at: 0)
         return result
     }
 
@@ -134,9 +166,36 @@ public final class ClayPipeline: @unchecked Sendable {
                       silhouette: Bool = true) throws -> ClayResult {
         let body3D = try model(modelID)
         var out = result
-        // Interactive (no silhouette) re-fits warm-start from the current body: a small edit is a small change.
-        let body = BodyFitter(model: body3D).fit(person, image: result.image, useSilhouette: silhouette && useSilhouette,
-                                                 warmStart: silhouette ? nil : result.bodies[index])
+        let fitter = BodyFitter(model: body3D)
+        let previous = result.bodies[index]
+        var body: FittedBody
+        // During a drag the same joints stay edited and the others don't move, so the cue built on the
+        // first live update (its mesh ray-cast is the costly part) holds for the rest of the drag.
+        let liveCue: MonocularDepthCue? = silhouette || previous.monocularDepth?.accepted != true ? nil
+            : result.liveDepthCues[index].flatMap { $0.edited == person.edited ? $0.cue : nil }
+                ?? cachedDepthCue(result, index: index, person: person, fitter: fitter, body: previous).cue
+        out.liveDepthCues[index] = liveCue.map { (person.edited, $0) }
+        if let cue = liveCue {
+            // Live update with the cached depth (no inference, no silhouette), warm-started from a fit that
+            // already passed the depth checks; the full re-fit when the drag ends checks again. A few more
+            // iterations than the plain live update (10): the extra depth terms slow convergence towards the
+            // dragged joint otherwise (~2 px lag on the self-test at 10; 12 keeps it within 1 px).
+            body = fitter.fit(person, image: result.image, useSilhouette: false, warmStart: previous, monocular: cue,
+                              refineIterations: 12)
+            body.monocularDepth = previous.monocularDepth
+        } else {
+            // Interactive (no silhouette) re-fits warm-start from the current body: a small edit is a small change.
+            body = fitter.fit(person, image: result.image, useSilhouette: silhouette && useSilhouette,
+                              warmStart: silhouette ? nil : previous)
+            if silhouette {
+                let depth = cachedDepthCue(result, index: index, person: person, fitter: fitter, body: body)
+                if let cue = depth.cue {
+                    body = fitter.refine(body, person: person, image: result.image, cue: cue, useSilhouette: useSilhouette)
+                } else {
+                    body.monocularDepth = depth.skipped
+                }
+            }
+        }
         out.people[index] = person
         out.bodies[index] = body
         out.meshes[index] = body3D.vertices(pose: body.pose, betas: body.betas, translation: body.translation)
@@ -144,8 +203,10 @@ public final class ClayPipeline: @unchecked Sendable {
     }
 
     /// Fits bodies to existing detections (used for re-fitting with a different body model, keeping edits).
+    /// - Parameter depth: a previous result's depth (`ClayResult.depth`), so a re-fit reuses its monocular
+    ///   estimate instead of running the model again. Calibration is redone against the new fits.
     public func fit(people: [DetectedPerson], image: LoadedImage, model modelID: String,
-                    horizonAngle: Double? = nil) throws -> ClayResult {
+                    horizonAngle: Double? = nil, depth: DepthReport? = nil) throws -> ClayResult {
         var timings: [(String, TimeInterval)] = []
         func timed<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
             let t0 = Date()
@@ -154,7 +215,7 @@ public final class ClayPipeline: @unchecked Sendable {
         }
         let body3D = try timed("load model") { try model(modelID) }
         let fitter = BodyFitter(model: body3D)
-        let bodies = timed("fit body") {
+        var bodies = timed("fit body") {
             // Each fit is independent; run them in parallel.
             var out = [FittedBody?](repeating: nil, count: people.count)
             DispatchQueue.concurrentPerform(iterations: people.count) { i in
@@ -163,12 +224,21 @@ public final class ClayPipeline: @unchecked Sendable {
             }
             return out.compactMap { $0 }
         }
+        var depth = depth
+        if depth?.estimate != nil {
+            timed("depth-guided fit") { applyMonocularDepth(&depth!, bodies: &bodies, people: people, image: image, fitter: fitter) }
+        }
         let meshes = timed("build meshes") {
             bodies.map { body3D.vertices(pose: $0.pose, betas: $0.betas, translation: $0.translation) }
         }
         return ClayResult(image: image, people: people, bodies: bodies, meshes: meshes, faces: body3D.faces,
-                          timings: timings, horizonAngle: horizonAngle)
+                          timings: timings, horizonAngle: horizonAngle, depth: depth)
     }
+}
+
+/// Carries the depth stage's result out of its background task.
+private final class DepthBox: @unchecked Sendable {
+    var report: DepthReport?
 }
 
 // MARK: - Export
@@ -201,6 +271,7 @@ public enum ClayExport {
             let keypoints2D: [String: [Double]]
             let keypointConfidence: [String: Double]
             let editedJoints: [String]
+            let monocularDepth: MonocularDepthFitReport?
             let estimatedAge: AgeEstimate?
             let givenAge: Double?
             let faceBox: [Double]?
@@ -212,6 +283,7 @@ public enum ClayExport {
             let focalLengthPixels: Double
             let focalFromEXIF: Bool
             let coordinateSystem: String
+            let depth: DepthSummary?
             let people: [Person]
         }
         let people = zip(result.people, result.bodies).enumerated().map { i, pb in
@@ -230,6 +302,7 @@ public enum ClayExport {
                     ("\($0)", p.confidence2D[$0.rawValue])
                 }),
                 editedJoints: BodyJoint.allCases.filter { p.edited[$0.rawValue] }.map { "\($0)" },
+                monocularDepth: b.monocularDepth,
                 estimatedAge: p.estimatedAge, givenAge: p.ageOverride,
                 faceBox: p.faceBox.map { [$0.minX, $0.minY, $0.width, $0.height] },
                 bodyBox: p.bodyBox.map { [$0.minX, $0.minY, $0.width, $0.height] })
@@ -237,7 +310,7 @@ public enum ClayExport {
         let out = Output(imageWidth: result.image.width, imageHeight: result.image.height,
                          focalLengthPixels: result.image.focalLengthPixels, focalFromEXIF: result.image.focalFromEXIF,
                          coordinateSystem: "OpenCV camera: x right, y down, z forward; SMPL axis-angle",
-                         people: people)
+                         depth: result.depth?.summary, people: people)
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try enc.encode(out)

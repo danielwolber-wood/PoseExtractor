@@ -20,7 +20,9 @@ jobs:
         run: swift build -c release
       - name: Check CLI startup
         run: swift run -c release clay --help
+      - name: Depth self-test (no models needed)
+        run: swift run -c release clay-depth-selftest
       - name: Check Python syntax
-        run: python3 -m py_compile tools/convert_models.py tools/convert_age_models.py
+        run: python3 -m py_compile tools/convert_models.py tools/convert_age_models.py tools/convert_depth_models.py tools/make_depth_test_fixtures.py
       - name: Check packaging script syntax
         run: zsh -n scripts/make_app.sh

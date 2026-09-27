@@ -3,6 +3,8 @@ import Foundation
 
 let usage = """
 usage: clay <image> [options]
+       clay quality <image-or-folder> [-o scores.csv|scores.json] [--models Models]
+                    [--metrics musiq,hyperiqa,nima,brisque,clipiqa,niqe,arniqa,liqe]
 
 Detects people in <image>, fits SMPL bodies and writes clay renders + meshes.
 
@@ -23,6 +25,12 @@ options:
       --focal-mm <mm>    35 mm-equivalent lens focal length (default: EXIF, else 50)
       --models <dir>     converted model directory (default: ./Models or $CLAY_MODELS)
       --no-silhouette    skip fitting body shape to the person segmentation mask
+      --depth-backend <b> monocular depth when the photo has no LiDAR/TrueDepth depth:
+                         none | auto | depth-anything-v2-small | depth-pro (default: auto — the first
+                         installed; nothing if none is). A missing model is a warning, not an error.
+      --no-monocular-depth  same as --depth-backend none
+      --depth-model <path>  Core ML depth model (.mlpackage/.mlmodelc or its folder) for --depth-backend
+      --no-depth-fallback   don't substitute another installed backend for a missing one
       --no-usdz          skip USDZ export
 """
 
@@ -33,6 +41,10 @@ func fail(_ msg: String) -> Never {
 
 var args = Array(CommandLine.arguments.dropFirst())
 if args.isEmpty || args.contains("-h") || args.contains("--help") { print(usage); exit(args.isEmpty ? 1 : 0) }
+if args.first == "quality" {
+    do { try runQualityCommand(Array(args.dropFirst())); exit(0) }
+    catch { fail(error.localizedDescription) }
+}
 if args.contains("--list-models") {
     guard let dir = ClayPipeline.defaultModelsDirectory() else { print("no converted models found"); exit(1) }
     print("body models:")
@@ -42,6 +54,12 @@ if args.contains("--list-models") {
     print("age models:")
     for m in AgeModelInfo.available(in: dir) {
         print("  \(m.id.padding(toLength: 16, withPad: " ", startingAt: 0)) \(m.displayName)  [\(m.licence)]")
+    }
+    print("depth models:")
+    let depthModels = ClayPipeline(modelsDirectory: dir).installedDepthModels()
+    for b in MonocularDepthBackend.allCases {
+        let where_ = depthModels[b].map { $0.modelURL.path } ?? "not installed (Models/depth/\(b.rawValue)/)"
+        print("  \(b.rawValue.padding(toLength: 24, withPad: " ", startingAt: 0)) \(b.displayName): \(where_)")
     }
     exit(0)
 }
@@ -58,6 +76,9 @@ var useSilhouette = true
 var renderSize = 2048.0
 var focalMM: Double?
 var background = ClayScene.Background.scene
+var depthMode = MonocularDepthMode.automatic
+var depthModelPath: String?
+var depthFallback = true
 
 while !args.isEmpty {
     let a = args.removeFirst()
@@ -108,6 +129,15 @@ while !args.isEmpty {
     case "--models": modelsPath = value()
     case "--no-usdz": writeUSDZ = false
     case "--no-silhouette": useSilhouette = false
+    case "--depth-backend":
+        let v = value()
+        guard let m = MonocularDepthMode(argument: v) else {
+            fail("unknown depth backend '\(v)' (none | auto | \(MonocularDepthBackend.allCases.map(\.rawValue).joined(separator: " | ")))")
+        }
+        depthMode = m
+    case "--no-monocular-depth": depthMode = .disabled
+    case "--depth-model": depthModelPath = value()
+    case "--no-depth-fallback": depthFallback = false
     default:
         if a.hasPrefix("-") { fail("unknown option \(a)") }
         inputPath = a
@@ -133,6 +163,12 @@ do {
         fail("unknown age model '\(id)' (see --list-models)")
     }
     pipeline.detector.segmentPeople = useSilhouette
+    pipeline.monocularDepthMode = depthMode
+    pipeline.monocularDepthFallback = depthFallback
+    if let depthModelPath {
+        guard case .backend(let b) = depthMode else { fail("--depth-model needs --depth-backend depth-anything-v2-small or depth-pro") }
+        pipeline.depthModelPaths[b] = URL(fileURLWithPath: depthModelPath)
+    }
     let result = try pipeline.run(image: image, model: bodyModel, ages: ages)
     let model = try pipeline.model(bodyModel)
     print("body model: \(model.info.displayName)")
@@ -141,6 +177,34 @@ do {
     if let d = image.depth {
         print("depth map: \(d.width)×\(d.height), \(d.isAbsolute ? "metric" : "relative (no scale, not used)")")
     }
+    if let depth = result.depth {
+        let d = depth.summary
+        // Quiet when nothing was asked for and nothing ran (e.g. auto with no depth model installed).
+        let asked: Bool
+        if case .backend = depthMode { asked = true } else { asked = false }
+        if d.source == "monocular" || asked || !d.warnings.isEmpty { print("monocular depth: \(d.headline)") }
+        if let c = depth.calibration {
+            var line = "  scale: \(c.method.rawValue)"
+            if c.usable {
+                line += c.scaleEstimated ? " (estimated from the body-size prior)" : " (from the model)"
+                if let a = c.metricAgreement { line += String(format: ", agrees with body prior to ×%.2f", a) }
+                if !c.constrainsDistance { line += ", relative depth within each body only" }
+            } else {
+                line += " (depth not used for fitting)"
+            }
+            print(line)
+            for n in c.notes { print("  note: \(n)") }
+        }
+        if let e = depth.estimate {
+            var line = String(format: "  valid %.0f%%, model output %d×%d", e.map.validFraction * 100, e.outputSize.x, e.outputSize.y)
+            if let f = e.estimatedFocalLengthPixels { line += String(format: ", model focal %.0f px", f) }
+            if let f = e.focalLengthUsedPixels, let s = e.focalSource { line += String(format: ", scaled with %.0f px (%@)", f, s.rawValue) }
+            if let c = e.confidenceSummary { line += String(format: ", confidence %.2f%@", c.mean, e.confidenceIsDerived ? " (derived)" : "") }
+            if e.coldStart { line += String(format: ", cold start: load %.0f ms", e.loadSeconds * 1000) }
+            print(line)
+        }
+        for w in d.warnings { print("warning: \(w)") }
+    }
     if let h = result.horizonAngle { print(String(format: "horizon: tilted %.1f° (counter-clockwise +)", -h * 180 / .pi)) }
     print("found \(result.bodies.count) \(result.bodies.count == 1 ? "person" : "people")")
     for (i, b) in result.bodies.enumerated() {
@@ -148,6 +212,15 @@ do {
                           i, b.translation.z, b.rms3D * 100, b.rms2D)
         if b.usedDepth {
             line += String(format: "\n    depth: distance and size from the depth map; height %.2f m", model.height(betas: b.betas))
+        }
+        if let m = b.monocularDepth {
+            if m.accepted {
+                line += String(format: "\n    monocular depth: used (%d samples%@), depth disagreement %.1f → %.1f cm",
+                               m.samples, m.usedAbsoluteDistance ? ", distance" : ", relative only",
+                               (m.depthRMSBefore ?? 0) * 100, (m.depthRMSAfter ?? 0) * 100)
+            } else {
+                line += "\n    monocular depth: not used — \(m.reason)"
+            }
         }
         let person = result.people[i]
         if let given = person.ageOverride {

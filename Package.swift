@@ -22,5 +22,7 @@ let package = Package(
         .executableTarget(name: "ClayStudio", dependencies: ["ClayCore"]),
         .executableTarget(name: "clay-selftest", dependencies: ["ClayCore"]),
         .executableTarget(name: "clay-icon", dependencies: ["ClayCore"]),
+        .executableTarget(name: "clay-quality-selftest", dependencies: ["ClayCore"]),
+        .executableTarget(name: "clay-depth-selftest", dependencies: ["ClayCore"]),
     ]
 )

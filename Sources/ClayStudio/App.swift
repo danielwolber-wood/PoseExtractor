@@ -29,7 +29,7 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if model.modelsMissing {
+            if model.modelsMissing && model.sourceImage == nil {
                 MissingModelsView()
             } else if model.sourceImage == nil {
                 DropZone(targeted: model.dropTargeted, open: openPanel)
@@ -85,6 +85,15 @@ struct ContentView: View {
                 ForEach(model.availableAgeModels) { m in Text(m.displayName).tag(m.id) }
             }
             .help("Age estimator. Estimated (or typed-in) ages condition Anny's body shape on age.")
+            Picker("Depth", selection: $model.depthMode) {
+                Text("No monocular depth").tag("none")
+                Text("Automatic depth").tag("auto")
+                ForEach(MonocularDepthBackend.allCases, id: \.self) { b in
+                    Text(b.displayName + (model.installedDepthBackends.contains(b) ? "" : " (not installed)")).tag(b.rawValue)
+                }
+            }
+            .help("Monocular depth for photos without LiDAR/TrueDepth depth. Embedded metric depth always wins; "
+                  + "a depth-guided fit is kept only when it doesn't make the fit worse.")
             Picker("Colours", selection: $model.style.palette) {
                 ForEach(ClayStyle.Palette.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
             }
@@ -189,7 +198,15 @@ struct SourcePanel: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 8) {
+                QualityPanel(model: model)
                 status
+                if let depth = model.depthStatus {
+                    Label(depth.text, systemImage: depth.warning ? "exclamationmark.triangle" : "cube.transparent")
+                        .font(.caption)
+                        .foregroundStyle(depth.warning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .lineLimit(2)
+                        .help(depth.text)
+                }
                 HStack(spacing: 14) {
                     Toggle("Skeletons", isOn: $model.showSkeleton)
                         .toggleStyle(.checkbox)
@@ -397,5 +414,49 @@ final class ResetTarget: NSObject {
     var handlers: [ObjectIdentifier: () -> Void] = [:]
     @objc func reset(_ g: NSGestureRecognizer) {
         if let v = g.view { handlers[ObjectIdentifier(v)]?() }
+    }
+}
+
+
+struct QualityPanel: View {
+    @ObservedObject var model: StudioModel
+    var body: some View {
+        DisclosureGroup("Image quality") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Button(model.qualityReport == nil ? "Analyze Quality" : "Analyze Again", action: model.analyzeQuality)
+                        .disabled(model.qualityRunning)
+                    if model.qualityRunning {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel", action: model.cancelQuality)
+                    }
+                    Spacer()
+                    Button("Export Scores…", action: model.exportQuality).disabled(model.qualityReport == nil)
+                }
+                if !model.qualityStatus.isEmpty { Text(model.qualityStatus).font(.caption).foregroundStyle(.secondary) }
+                if let report = model.qualityReport {
+                    Text(String(format: "%d × %d · %.2f MP · %@ · %@", report.width, report.height, report.megapixels, report.orientation, report.standardRatioBucket))
+                        .font(.caption)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(report.scores, id: \.metric) { score in
+                                HStack(alignment: .top) {
+                                    Text(score.metric.uppercased()).frame(width: 90, alignment: .leading)
+                                    if let raw = score.raw {
+                                        Text(String(format: "%.4f", raw)).monospacedDigit()
+                                        Spacer()
+                                        Text(score.lowerBetter ? "Lower is better" : "Higher is better").foregroundStyle(.secondary)
+                                    } else {
+                                        Text(score.error ?? "Unavailable").foregroundStyle(.secondary).textSelection(.enabled)
+                                    }
+                                }.font(.caption)
+                            }
+                        }
+                    }.frame(maxHeight: 180)
+                    Text("Each metric has its own scale. These scores assess the photo, not pose accuracy.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }.padding(.vertical, 6)
+        }
     }
 }

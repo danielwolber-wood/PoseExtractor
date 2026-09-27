@@ -12,7 +12,9 @@ import UniformTypeIdentifiers
 // and the fit is compared with and without being told the age.
 // Poses the model in a known asymmetric pose with a heavier-than-average build, renders it as clay,
 // runs the whole pipeline on the render, and reports how well pose, shape, placement, the silhouette
-// stage, keypoint editing and metric depth recover the truth.
+// stage, keypoint editing, metric depth and (synthetic) monocular depth recover the truth.
+// Exits non-zero if a monocular-depth guarantee fails (embedded depth priority, no harm from bad depth,
+// edited joints kept).
 
 var modelID = ClayPipeline.defaultModelID
 var poseName = "raise"
@@ -31,6 +33,8 @@ outDir.appendPathComponent(modelID + (poseName == "raise" ? "" : "_" + poseName)
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
 let pipeline = ClayPipeline(modelsDirectory: modelsURL)
+// Installed depth models must not change the reference numbers; monocular depth is tested explicitly below.
+pipeline.monocularDepthMode = .disabled
 let model = try pipeline.model(modelID)
 print("model: \(model.info.displayName) — \(model.jointCount) joints, \(model.vertexCount) vertices, \(model.betaCount) shape coefficients")
 
@@ -244,6 +248,126 @@ for (label, b) in [("without depth", fit), ("with depth   ", withDepth)] {
                  k.joints[joint("pelvis")].z + b.translation.z, trueZ, model.height(betas: b.betas), model.height(betas: betas)))
 }
 
+// MARK: Monocular depth (synthetic)
+
+// Monocular maps made from the true z-buffer, with the errors real models make: an unknown scale and
+// shift, blurred occlusion edges (depth bleeding between body and background), a low-frequency warp and
+// noise. Fitted on the same detections as the no-depth fit, so only the depth differs.
+var depthChecksFailed = false
+func expect(_ ok: Bool, _ what: String) {
+    print("  \(ok ? "ok  " : "FAIL") \(what)")
+    if !ok { depthChecksFailed = true }
+}
+var rng: UInt64 = 0x9E3779B97F4A7C15
+func noise() -> Float {  // deterministic, uniform in [-1, 1]
+    rng = rng &* 6364136223846793005 &+ 1442695040888963407
+    return Float(rng >> 40) / Float(1 << 23) - 1
+}
+func boxBlur(_ v: [Float], radius r: Int) -> [Float] {
+    var a = v, b = v
+    for y in 0..<dh { for x in 0..<dw {
+        var s: Float = 0, n: Float = 0
+        for k in max(0, x - r)...min(dw - 1, x + r) { s += a[y * dw + k]; n += 1 }
+        b[y * dw + x] = s / n
+    } }
+    for y in 0..<dh { for x in 0..<dw {
+        var s: Float = 0, n: Float = 0
+        for k in max(0, y - r)...min(dh - 1, y + r) { s += b[k * dw + x]; n += 1 }
+        a[y * dw + x] = s / n
+    } }
+    return a
+}
+func realistic(_ v: [Float], noiseLevel: Float = 0.01) -> [Float] {
+    boxBlur(v, radius: 2).enumerated().map { i, d in
+        let x = Float(i % dw) / Float(dw), y = Float(i / dw) / Float(dh)
+        return d * (1 + 0.04 * sin(2 * .pi * x) * cos(2 * .pi * y)) * (1 + noiseLevel * noise())
+    }
+}
+let trueZ0 = syntheticDepth(width: dw, height: dh)
+let monoCases: [(String, MonocularDepthBackend, DepthRepresentation, [Float])] = [
+    ("relative (Depth Anything-like)", .depthAnythingV2Small, .relativeInverseDepth, realistic(trueZ0.map { 3 / $0 + 0.02 })),
+    ("metric (Depth Pro-like)", .depthPro, .metricDepth, realistic(trueZ0)),
+    // Informational: a biased metric map passes its bias into body size where the size prior was right.
+    ("metric, 6% scale error (Depth Pro-like)", .depthPro, .metricDepth, realistic(trueZ0.map { $0 * 1.06 })),
+    ("pure noise", .depthAnythingV2Small, .relativeInverseDepth, trueZ0.map { _ in 0.5 + 0.45 * noise() }),
+    ("depth order inverted", .depthAnythingV2Small, .relativeInverseDepth, realistic(trueZ0.map { $0 / 6 })),
+]
+print("monocular depth (synthetic maps, same detections):")
+let baseDistance = model.kinematics(pose: fit.pose, betas: fit.betas).joints[joint("pelvis")].z + fit.translation.z
+print(String(format: "  %-40@ MPJPE %.1f cm, pelvis %.2f m (truth %.2f), height %.2f m", "no depth" as NSString,
+             mpjpe(fit) * 100, baseDistance, trueZ, model.height(betas: fit.betas)))
+var monoResults: [String: ClayResult] = [:]
+for (label, backend, representation, values) in monoCases {
+    let map = DepthMap(width: dw, height: dh, values: values, representation: representation)
+    pipeline.depthEstimatorOverride = SyntheticDepthEstimator(backend: backend) { _ in MonocularDepthEstimate(backend: backend, map: map) }
+    pipeline.monocularDepthMode = .backend(backend)
+    let depth = pipeline.estimateDepth(for: image)
+    let tFit = Date()
+    let r = try pipeline.fit(people: result.people, image: image, model: modelID, depth: depth)
+    let ms = Date().timeIntervalSince(tFit) * 1000
+    monoResults[label] = r
+    let b = r.bodies[0], rep = b.monocularDepth
+    let k = model.kinematics(pose: b.pose, betas: b.betas)
+    print(String(format: "  %-40@ MPJPE %.1f cm, pelvis %.2f m, height %.2f m, %@ (%@), %.0f ms", label as NSString,
+                 mpjpe(b) * 100, k.joints[joint("pelvis")].z + b.translation.z, model.height(betas: b.betas),
+                 (rep?.accepted == true ? "accepted" : "rejected") as NSString,
+                 "\(r.depth?.calibration?.method.rawValue ?? "-"): \(rep?.reason ?? "no report")" as NSString, ms))
+    if let rep, let a = rep.depthRMSBefore, let c = rep.depthRMSAfter {
+        print(String(format: "  %-40@ depth disagreement %.1f → %.1f cm over %d samples, 3D vs Vision %.1f → %.1f cm, Vision correlation %@",
+                     "" as NSString, a * 100, c * 100, rep.samples, fit.rms3D * 100, b.rms3D * 100,
+                     (rep.visionCorrelation.map { String(format: "%.2f", $0) } ?? "n/a") as NSString))
+    }
+}
+pipeline.depthEstimatorOverride = nil
+pipeline.monocularDepthMode = .disabled
+
+let noiseFit = monoResults["pure noise"]!.bodies[0]
+expect(noiseFit.monocularDepth?.accepted != true && abs(mpjpe(noiseFit) - mpjpe(fit)) < 1e-9, "a noise depth map is rejected and leaves the fit unchanged")
+let relFit = monoResults["relative (Depth Anything-like)"]!.bodies[0]
+// Used, or turned down by a sanity check (e.g. the silhouette) — but it must reach the fitter calibrated.
+expect(relFit.monocularDepth.map { $0.samples > 0 } == true, "relative depth is calibrated and tried")
+expect(monoResults["relative (Depth Anything-like)"]!.depth?.calibration?.scaleEstimated == true
+       && monoResults["relative (Depth Anything-like)"]!.depth?.calibration?.constrainsDistance == false,
+       "relative depth: scale estimated, not treated as metric distance")
+// 1 cm: the self-test's run-to-run variation is ~0.5 cm (Vision's detections differ slightly between runs).
+expect(mpjpe(relFit) <= mpjpe(fit) + 0.01, "relative depth doesn't make the pose worse")
+let metricFit = monoResults["metric (Depth Pro-like)"]!.bodies[0]
+expect(mpjpe(metricFit) <= mpjpe(fit) + 0.01, "metric monocular depth doesn't make the pose worse")
+
+// Embedded metric depth beats a monocular backend: the backend isn't run.
+pipeline.depthEstimatorOverride = SyntheticDepthEstimator(backend: .depthPro) { _ in
+    MonocularDepthEstimate(backend: .depthPro, map: DepthMap(width: 2, height: 2, values: [9, 9, 9, 9], representation: .metricDepth))
+}
+pipeline.monocularDepthMode = .backend(.depthPro)
+let embeddedFirst = try pipeline.run(image: depthImage, model: modelID)
+expect(embeddedFirst.depth?.decision == .embeddedMetric && embeddedFirst.depth?.estimate == nil
+       && embeddedFirst.bodies[0].usedDepth && embeddedFirst.bodies[0].monocularDepth == nil,
+       "embedded metric depth takes priority over the selected backend")
+pipeline.depthEstimatorOverride = nil
+pipeline.monocularDepthMode = .disabled
+
+// Editing with monocular depth: the dragged wrist still lands where it was put (full and live re-fit).
+let monoResult = monoResults["relative (Depth Anything-like)"]!
+func wristError(_ b: FittedBody) -> Double {
+    let w = model.kinematics(pose: b.pose, betas: b.betas).joints[joint("rightWrist")] + b.translation
+    return simd_distance(SIMD2(f * w.x / w.z, f * w.y / w.z) + c, target)
+}
+let noDepthEdit = try pipeline.refit(result, person: 0, with: edited, model: modelID).bodies[0]
+let t2 = Date()
+let monoEdit = try pipeline.refit(monoResult, person: 0, with: edited, model: modelID).bodies[0]
+let tFull = Date().timeIntervalSince(t2) * 1000
+// Drag updates after the first reuse its depth cue; time one of those (steady state while dragging).
+let firstLive = try pipeline.refit(monoResult, person: 0, with: edited, model: modelID, silhouette: false)
+let t3 = Date()
+let monoLive = try pipeline.refit(firstLive, person: 0, with: edited, model: modelID, silhouette: false).bodies[0]
+let tLive = Date().timeIntervalSince(t3) * 1000
+print(String(format: "  editing with depth: wrist %.1f px from target (no depth %.1f px), live %.1f px (no depth %.1f px), full refit %.0f ms, live %.1f ms, depth %@",
+             wristError(monoEdit), wristError(noDepthEdit), wristError(monoLive), wristError(live), tFull, tLive,
+             (monoEdit.monocularDepth.map { $0.accepted ? "used" : "rejected: \($0.reason)" } ?? "none") as NSString))
+expect(wristError(monoEdit) <= wristError(noDepthEdit) + 2, "monocular depth keeps the user-edited joint (full re-fit)")
+expect(wristError(monoLive) <= wristError(live) + 2, "monocular depth keeps the user-edited joint (live update)")
+
 let scene = result.makeScene(style: ClayStyle())
 if let img = scene.render(.photo) { try ClayExport.writePNG(img, to: outDir.appendingPathComponent("recovered_photo.png")) }
 if let img = scene.render(.studio) { try ClayExport.writePNG(img, to: outDir.appendingPathComponent("recovered_studio.png")) }
+if depthChecksFailed { print("monocular depth checks FAILED"); exit(1) }

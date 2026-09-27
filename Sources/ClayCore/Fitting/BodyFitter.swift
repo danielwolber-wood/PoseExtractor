@@ -15,6 +15,8 @@ public struct FittedBody: Codable, Sendable {
     public var rms2D: Double
     /// Whether a metric depth map constrained the body's distance (and so its size).
     public var usedDepth = false
+    /// What monocular depth did to this fit (nil when no monocular depth was run).
+    public var monocularDepth: MonocularDepthFitReport?
     /// Overlap of the body's projection with the person's segmentation mask, before and after the
     /// silhouette stage (nil when no mask was available or the stage was skipped).
     public var silhouetteBefore: SilhouetteOverlap?
@@ -79,8 +81,12 @@ public struct BodyFitter {
     /// - Parameter useSilhouette: refine body shape against the person's segmentation mask (~50 ms).
     /// - Parameter warmStart: a previous fit of the same person to start from (interactive editing):
     ///   skips stage 1 and runs a short stage 2, so a re-fit takes a few milliseconds even for Anny.
+    /// - Parameter monocular: monocular depth evidence (see `MonocularDepthCue`). Ignored when the photo
+    ///   has embedded metric depth, which is stronger. Use `refine` to also guard against it making the fit worse.
+    /// - Parameter refineIterations: stage-2 iterations when warm-started (default 10).
     public func fit(_ person: DetectedPerson, image: LoadedImage, useSilhouette: Bool = true,
-                    warmStart: FittedBody? = nil) -> FittedBody {
+                    warmStart: FittedBody? = nil, monocular: MonocularDepthCue? = nil,
+                    refineIterations: Int? = nil) -> FittedBody {
         let warm = warmStart.flatMap { $0.model == model.info.id && $0.pose.count == model.jointCount ? $0 : nil }
         let obs3 = targets.map { person.joints3D[$0.joint.rawValue] }
         let obsRel = obs3.map { $0 - obs3[0] }
@@ -193,8 +199,11 @@ public struct BodyFitter {
             let pts = targetPoints(x).points
             return depthTargets.map { pts[$0.index].z + x[transOffset + 2] }.sorted()[depthTargets.count / 2]
         }
-        func depthResiduals(_ x: [Double], into r: inout [Double]) {
+        // Monocular depth only when there's no embedded metric depth (priority: sensor > model).
+        let mono = useDepth ? nil : monocular
+        func depthResiduals(_ x: [Double], _ pts: [SIMD3<Double>], into r: inout [Double]) {
             if useDepth { r.append((torsoDepth(x) - measuredDepth) / 0.02) }
+            mono?.residuals(pts, tz: x[transOffset + 2], into: &r)
         }
 
         // Stage 2: translation (closed form), then pose + translation against the 2D keypoints.
@@ -209,10 +218,14 @@ public struct BodyFitter {
 
         let sigma2D = 0.015 * personPx
         // With metric depth, body size is observable: let the shape adjust too.
+        let freeShape = useDepth || mono?.freeShape == true
         let stage2 = poseParams + Array(transOffset..<transOffset + 3)
-            + (useDepth ? Array(betaOffset..<betaOffset + model.betaCount) : [])
+            + (freeShape ? Array(betaOffset..<betaOffset + model.betaCount) : [])
         if useDepth { x[transOffset + 2] += measuredDepth - torsoDepth(x) }
-        x = LevenbergMarquardt.minimize(x, active: stage2, iterations: warm == nil ? iterations : 10) { x in
+        if let mono, mono.absolute {
+            x[transOffset + 2] += mono.referenceDepth - mono.bodyReference(targetPoints(x).points, tz: x[transOffset + 2])
+        }
+        x = LevenbergMarquardt.minimize(x, active: stage2, iterations: warm == nil ? iterations : (refineIterations ?? 10)) { x in
             var r: [Double] = []
             let pts = targetPoints(x).points
             let t = SIMD3(x[transOffset], x[transOffset + 1], x[transOffset + 2])
@@ -225,7 +238,7 @@ public struct BodyFitter {
             }
             residuals3D(pts, x, sigma: 0.08, into: &r)
             priorResiduals(x, into: &r)
-            depthResiduals(x, into: &r)
+            depthResiduals(x, pts, into: &r)
             return r
         }
 
@@ -239,9 +252,10 @@ public struct BodyFitter {
                                     // A weak pull toward Vision's 3D: the silhouette can't see depth, so without
                                     // it the trunk and hips drift; stage 2's stronger 8 cm version over-constrains
                                     // (Vision's own 3D is ~18 cm off). Tuned on clay-selftest.
-                                    residuals3D(targetPoints(x).points, x, sigma: 0.25, into: &r)
+                                    let pts = targetPoints(x).points
+                                    residuals3D(pts, x, sigma: 0.25, into: &r)
                                     priorResiduals(x, into: &r)
-                                    depthResiduals(x, into: &r)
+                                    depthResiduals(x, pts, into: &r)
                                 })
         }
 

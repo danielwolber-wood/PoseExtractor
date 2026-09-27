@@ -5,7 +5,8 @@ Photo → people → SMPL bodies → clay figures, running natively on macOS (Ap
 ```
 image ──► Vision: human rectangles, instance masks, horizon
       ──► per-person crop (with camera intrinsics) ──► 3D body pose · 2D body pose · hand pose · face landmarks
-      ──► SMPL fit (Levenberg–Marquardt, Swift/Accelerate): 3D joints → 2D keypoints (+ metric depth) → silhouette
+      ──► optional monocular depth (Core ML: Depth Anything V2 / Depth Pro), once per photo, alongside Vision
+      ──► SMPL fit (Levenberg–Marquardt, Swift/Accelerate): 3D joints → 2D keypoints (+ depth) → silhouette
       ──► SMPL mesh (blend shapes + LBS via BLAS) ──► SceneKit/Metal render, USDZ / OBJ / JSON
 ```
 
@@ -20,6 +21,7 @@ Sources/
   ClayStudio/        SwiftUI desktop app
   clay/              Command-line app
   clay-selftest/     Synthetic end-to-end validation executable
+  clay-depth-selftest/ Monocular depth checks (no models needed)
   clay-icon/         App icon renderer
 scripts/             App build and packaging scripts
 tools/               Offline Python model converters
@@ -93,6 +95,27 @@ python tools/convert_age_models.py faceage
 - **Parity:** both conversions are checked against the originals.
 - **FAHR-FaceAge:** its weights aren't released yet. When they are, it can plug in the same way, since the app reads each model's crops, size, normalisation and output from its `age.json`.
 
+## Depth
+
+Photos with LiDAR/TrueDepth depth use it directly. For other photos, two optional Core ML models
+can estimate depth. They are installed locally and never downloaded by the app; with neither
+installed, nothing changes.
+
+| Depth model | Output | Size | Licence | Install |
+|---|---|---|---|---|
+| **Depth Anything V2 Small** (default when installed) | Relative inverse depth (no scale) | 48 MB | Apache-2.0 | `tools/convert_depth_models.py depth-anything-v2-small` (Apple's Core ML export) |
+| **Depth Pro** | Metric depth + field of view | 1.9 GB | Code: Apple sample-code licence; weights: `apple-amlr` (research) | `tools/convert_depth_models.py depth-pro` (offline conversion) |
+
+- **Where:** `Models/depth/<id>/` in any models folder, e.g. `~/Library/Application Support/ClayStudio/Models`,
+  which the app searches but `make_app.sh` doesn't bundle.
+- **Priority:** embedded metric depth, then the selected backend, then another installed one, then none.
+  A missing model is a warning, never an error.
+- **How it's used:** relative depth is never treated as metres. With one person it only says which limbs
+  are in front. Depth Pro's metric distance counts about as much as the body-size prior. A depth-guided fit
+  is kept only if it doesn't make the 2D keypoints, silhouette, edited joints or pose worse.
+- **Self-test:** mean joint error drops by 0.5–3.4 cm on synthetic maps with realistic errors, and bad
+  maps are rejected. Setup, tensor contracts, results and limits are in [Monocular depth](docs/depth.md).
+
 ## Requirements
 
 - macOS 14 or later on Apple Silicon.
@@ -127,6 +150,7 @@ uv run --python 3.12 --with anny --with numpy --with scipy tools/convert_models.
 **App:** `open build/ClayStudio.app`, then drop in a photo.
 
 - **Masks:** the *Masks* checkbox shows each person's segmentation mask, and *Fit silhouette* toggles the silhouette stage. Each person's row shows how much of the body lies outside its mask.
+- **Depth:** the toolbar's *Depth* menu picks the monocular depth backend (or none). A status line under the photo says what it did, or why it wasn't used.
 - **Body model:** the toolbar dropdown lists every converted model, grouped by family. Switching re-fits the current detections, and your edits are kept. For Anny, each person's row shows their apparent age.
 - **Views:** "Photo" composites the figures over the photo with a matching camera and ground shadows. "Studio" shows a three-quarter view on a backdrop. Drag to orbit and double-click to reset.
 - **Fixing the pose:** drag any joint on the photo. The person is re-fit live (about 20 ms per re-fit), and edited joints turn yellow. Dashed joints are Vision's guesses (out of frame or hidden), so check those first. The fitter trusts their 2D position and ignores Vision's 3D guess for them. Each person's ⋯ menu has *Swap Left and Right* (a common Vision failure), *Reset Edits* and *Remove Person*. Changing the body model keeps your edits.
@@ -148,19 +172,24 @@ Options:
 - `--focal-mm` (35 mm-equivalent lens: EXIF by default, else 50)
 - `--no-silhouette` (skip the segmentation-mask stage)
 - `--age <years | i=years,...>` and `--age-model mivolo|faceage|none`
+- `--depth-backend none|auto|depth-anything-v2-small|depth-pro` (default `auto`: the first installed),
+  `--no-monocular-depth`, `--depth-model <path>`, `--no-depth-fallback`
 - `--no-usdz`
 
 It writes these to the output folder:
 - `clay_photo.png` and `clay_studio.png`
 - `clay.usdz`
 - `person_N.obj`
-- `body_params.json`, with the model id, pose, shape, translation, keypoints, fit errors and (for Anny) phenotype, in the OpenCV camera frame.
+- `body_params.json`, with the model id, pose, shape, translation, keypoints, fit errors and (for Anny) phenotype, in the OpenCV camera frame. It also records the depth source and diagnostics (`depth`), and what monocular depth did to each person (`monocularDepth`).
 
 **Self-test:** `swift run -c release clay-selftest --model <id>` works with any model. It renders a known pose, runs the whole pipeline on the render and reports the joint errors. It also checks:
 - that left and right come out correctly
 - that dragging a keypoint pulls the fitted body there, for both the full re-fit and the fast live update
 - silhouette gains in shape and joint error
 - the depth HEIC round trip
+- synthetic monocular depth (relative and metric, plus noise and inverted maps that must be rejected), with depth priority and edited joints kept
+
+`swift run -c release clay-depth-selftest` checks the depth plumbing without any model.
 
 **Accuracy** (self-test, averaged over three poses, after the silhouette stage):
 
@@ -176,9 +205,25 @@ It writes these to the output folder:
 
 **Icon:** `Sources/clay-icon` renders the app icon with the same pipeline, and `make_app.sh` turns it into `AppIcon.icns`.
 
+## Image quality
+
+Open **Image quality → Analyze Quality** below the source photo to score it with
+MUSIQ, HyperIQA, NIMA, BRISQUE, CLIP-IQA, NIQE, ARNIQA, and LIQE. Export Scores saves
+CSV or JSON. Analysis is independent of person detection and pose edits.
+
+```bash
+build/clay quality examples/photos -o out/quality.csv
+```
+
+This runs natively: six Core ML networks plus Swift statistical metrics. Convert the
+weights once with `tools/convert_quality_models.py`; Python is only used offline.
+The `align-one` name in the supplied script is not registered in PyIQA and is reported
+as unavailable. See [image-quality setup, validation, and limits](docs/image-quality.md).
+
 ## Implementation
 
-See [How the fit works](docs/fitting.md) for fitting stages, camera handling, depth, silhouettes, and priors.
+See [How the fit works](docs/fitting.md) for fitting stages, camera handling, depth, silhouettes, and priors,
+and [Monocular depth](docs/depth.md) for the depth backends.
 
 ## Limitations and next steps
 

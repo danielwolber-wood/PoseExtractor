@@ -12,8 +12,12 @@ python3 -m py_compile tools/convert_models.py tools/convert_age_models.py
 zsh -n scripts/make_app.sh
 ```
 
+`swift run -c release clay-depth-selftest` checks monocular-depth discovery, tensor handling, calibration
+and error paths on tiny embedded Core ML fixtures; it needs no model downloads. After changing the
+fixture generator, regenerate them with `.cache/iqa-env/bin/python tools/make_depth_test_fixtures.py`.
+
 GitHub Actions runs these checks on macOS. They compile all executable targets and
-check CLI startup and script syntax. There is no XCTest target; model-dependent
+check CLI startup and script syntax. `swift run -c release clay-quality-selftest` checks quality metadata, exports, and error handling without models. There is no XCTest target; model-dependent
 rendering and inference are checked locally with the synthetic self-test.
 
 ## Model-dependent validation
@@ -38,3 +42,5 @@ out of commits. Model downloads and conversions remain local.
 
 Describe behavior changes and the validation performed in pull requests. Source
 licensing has not yet been selected; third-party model terms are separate.
+
+Image-quality conversion and end-to-end PyIQA parity checks are documented in [docs/image-quality.md](docs/image-quality.md).

@@ -17,6 +17,12 @@ Code: `Sources/ClayCore/Fitting/BodyFitter.swift`.
    - **When it applies:** photos with an embedded *metric* depth map (LiDAR/TrueDepth). The torso's measured distance pins the body's distance, and body shape is then free to set its real size.
    - **Self-test:** distance error drops from 38 cm to 3 cm and height error from 10 cm to 3 cm, measured on a synthetic HEIC with embedded depth.
    - **Relative depth:** dual-camera Portrait disparity has no scale, so it's ignored.
+   - **Monocular depth:** photos without embedded metric depth can use Depth Anything V2 Small or Depth Pro
+     (optional Core ML models). Embedded metric depth always takes priority. Monocular depth refines the
+     fit made without it: it adds robust residuals for each keypoint's depth relative to the torso and,
+     only when distance is observable, a soft distance term. The refined fit is kept only if 2D keypoints,
+     silhouette, edited joints and pose plausibility don't get worse. Relative depth is never treated as
+     metres. See [Monocular depth](depth.md).
    - **Not passed to Vision:** with depth that lacks camera-calibration data, Vision's own depth-aware 3D request hits an internal assertion that kills the process. That path is deliberately not used.
 7. **Keypoint trust:** Vision invents positions for joints it can't see. Limbs its 2D detector doesn't confirm, and anything projecting outside the photo, lose almost all weight, so truncated legs fall back to a natural pose. Face keypoints (nose, eyes, ears) come from the 2D detector and are matched to SMPL surface vertices; when they're found, they override Vision's 3D head.
 8. **Silhouette (stage 3):** code in `Sources/ClayCore/Fitting/SilhouetteFit.swift`.

@@ -60,7 +60,33 @@ final class StudioModel: ObservableObject {
     private lazy var pipeline: ClayPipeline? = modelsDirectory.map { dir in
         let p = ClayPipeline(modelsDirectory: dir)
         p.ageModel = ageModel == Self.noAgeModel ? nil : ageModel
+        p.monocularDepthMode = MonocularDepthMode(argument: depthMode) ?? .automatic
         return p
+    }
+
+    /// Monocular depth for photos without LiDAR/TrueDepth depth: "none", "auto" or a backend id.
+    /// Switching re-estimates depth (off the main thread) and re-fits, keeping edits.
+    @Published var depthMode = "auto" {
+        didSet {
+            guard depthMode != oldValue, let pipeline else { return }
+            pipeline.monocularDepthMode = MonocularDepthMode(argument: depthMode) ?? .automatic
+            reestimateDepth()
+        }
+    }
+    /// Depth backends whose model files were found (refreshed when a photo is opened).
+    @Published private(set) var installedDepthBackends: Set<MonocularDepthBackend> = []
+    private func refreshInstalledDepthBackends() {
+        installedDepthBackends = Set(pipeline.map { Array($0.installedDepthModels().keys) } ?? [])
+    }
+    /// What depth did for the current result, for the status line (nil when there's nothing to say).
+    var depthStatus: (text: String, warning: Bool)? {
+        guard let depth = result?.depth else { return nil }
+        let d = depth.summary
+        if let w = d.warnings.first { return (w, true) }
+        guard d.source == "monocular" else { return nil }
+        let reports = result?.bodies.compactMap(\.monocularDepth) ?? []
+        let used = reports.filter(\.accepted).count
+        return ("Depth: \(d.headline) · used for \(used) of \(reports.count)", false)
     }
 
     static let noAgeModel = "none"
@@ -77,6 +103,68 @@ final class StudioModel: ObservableObject {
         }
     }
     var availableAgeModels: [AgeModelInfo] { pipeline?.availableAgeModels ?? [] }
+    @Published private(set) var qualityReport: ImageQualityReport?
+    @Published private(set) var qualityStatus = ""
+    @Published private(set) var qualityRunning = false
+    private var qualityTask: Task<Void, Never>?
+    private var qualityGeneration = UUID()
+    private let qualityAnalyzer = ImageQualityAnalyzer(modelsDirectory: ImageQualityAnalyzer.defaultModelsDirectory())
+
+    func analyzeQuality() {
+        guard let url = currentURL, !qualityRunning else { return }
+        qualityTask?.cancel()
+        let generation = UUID()
+        qualityGeneration = generation
+        qualityRunning = true
+        qualityStatus = "Analyzing image quality…"
+        let analyzer = qualityAnalyzer
+        qualityTask = Task.detached(priority: .utility) {
+            do {
+                let report = try analyzer.analyze(url: url, cancelled: { Task.isCancelled }, progress: { metric in
+                    Task { @MainActor in
+                        guard self.qualityGeneration == generation, self.qualityRunning else { return }
+                        self.qualityStatus = "Scoring \(metric.uppercased())…"
+                    }
+                })
+                await MainActor.run {
+                    guard self.qualityGeneration == generation else { return }
+                    self.qualityReport = report
+                    self.qualityRunning = false
+                    self.qualityStatus = ""
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.qualityGeneration == generation else { return }
+                    self.qualityRunning = false
+                    self.qualityStatus = error is CancellationError ? "Cancelled" : error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func cancelQuality() {
+        qualityTask?.cancel()
+        qualityGeneration = UUID()
+        qualityRunning = false
+        qualityStatus = "Cancelled"
+    }
+
+    func exportQuality() {
+        guard let report = qualityReport else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .json]
+        panel.nameFieldStringValue = "quality_output.csv"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                if url.pathExtension.lowercased() == "json" {
+                    try ImageQualityReport.json([report]).write(to: url, options: .atomic)
+                } else {
+                    try ImageQualityReport.csv([report]).write(to: url, atomically: true, encoding: .utf8)
+                }
+            } catch { qualityStatus = error.localizedDescription }
+        }
+    }
+
     private var currentURL: URL?
     private var originalPeople: [DetectedPerson] = []
     private var dragSessionActive = false
@@ -87,15 +175,20 @@ final class StudioModel: ObservableObject {
     var modelsMissing: Bool { modelsDirectory == nil }
 
     func open(_ url: URL) {
+        cancelQuality()
+        qualityReport = nil
+        qualityStatus = ""
         currentURL = url
         sourceImage = NSImage(contentsOf: url)
+        refreshInstalledDepthBackends()
         detect()
     }
 
     // MARK: Detection and fitting
 
     func detect() {
-        guard let url = currentURL, let pipeline else { return }
+        guard let url = currentURL else { return }
+        guard let pipeline else { phase = .failed("Body models are not installed. Image quality analysis is available below."); return }
         phase = .working("Finding people…")
         result = nil
         clayScene = nil
@@ -111,7 +204,10 @@ final class StudioModel: ObservableObject {
                     self.install(result)
                 }
             } catch {
-                await MainActor.run { self.phase = .failed(error.localizedDescription) }
+                await MainActor.run {
+                    guard self.currentURL == url else { return }
+                    self.phase = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -135,12 +231,36 @@ final class StudioModel: ObservableObject {
     }
 
     /// Re-fits every body with the current (possibly edited) detections, e.g. after a body-model change.
+    /// Reuses the result's cached depth estimate.
     private func refitAll() {
         guard let pipeline, let result else { return }
         do {
-            install(try pipeline.fit(people: people, image: result.image, model: bodyModel, horizonAngle: result.horizonAngle))
+            install(try pipeline.fit(people: people, image: result.image, model: bodyModel, horizonAngle: result.horizonAngle,
+                                     depth: result.depth))
         } catch {
             phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Runs the (newly selected) depth backend on the current photo in the background, then re-fits.
+    private func reestimateDepth() {
+        guard let pipeline, let result else { return }
+        let (image, people, bodyModel, horizon, url) = (result.image, self.people, self.bodyModel, result.horizonAngle, currentURL)
+        phase = .working("Estimating depth…")
+        Task.detached(priority: .userInitiated) {
+            let depth = pipeline.estimateDepth(for: image)
+            do {
+                let refit = try pipeline.fit(people: people, image: image, model: bodyModel, horizonAngle: horizon, depth: depth)
+                await MainActor.run {
+                    guard self.currentURL == url else { return }
+                    self.install(refit)
+                }
+            } catch {
+                await MainActor.run {
+                    guard self.currentURL == url else { return }
+                    self.phase = .failed(error.localizedDescription)
+                }
+            }
         }
     }
 
