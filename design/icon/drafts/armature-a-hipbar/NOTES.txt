@@ -1,0 +1,1 @@
+Two hip nodes + short connector; one neck node; wire 24/node r32; slimmer capsule limbs, straight-sided torso.

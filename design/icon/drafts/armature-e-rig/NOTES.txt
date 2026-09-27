@@ -1,0 +1,1 @@
+Skeleton-first: wire 30 / node r32 on a wider square-capped block body.
