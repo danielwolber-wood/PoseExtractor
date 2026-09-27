@@ -106,6 +106,29 @@ public final class ClayScene {
         styleBody(index)
     }
 
+    /// Marker for the joint under the pointer / being dragged on the model. Not in the scene while hidden,
+    /// so it never ends up in an export.
+    private lazy var handle: SCNNode = {
+        let sphere = SCNSphere(radius: 0.022)
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = NSColor.systemYellow
+        m.readsFromDepthBuffer = false      // visible through the body
+        sphere.materials = [m]
+        let node = SCNNode(geometry: sphere)
+        node.name = "jointHandle"
+        node.renderingOrder = 100
+        node.castsShadow = false
+        return node
+    }()
+
+    /// Shows the joint marker at `point` (camera space, metres: x right, y down, z forward), or hides it.
+    public func showHandle(at point: SIMD3<Double>?) {
+        guard let p = point else { handle.removeFromParentNode(); return }
+        handle.simdPosition = SIMD3(Float(p.x), Float(-p.y), Float(-p.z))
+        if handle.parent == nil { scene.rootNode.addChildNode(handle) }
+    }
+
     // MARK: - Ground, lights, cameras
 
     private func setupGroundAndLights(bodies: [FittedBody], meshes: [[SIMD3<Float>]], horizonAngle: Double?) {

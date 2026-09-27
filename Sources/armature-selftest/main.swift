@@ -175,6 +175,19 @@ let lw = lk.joints[joint("rightWrist")] + live.translation
 print(String(format: "live editing : wrist lands %.1f px from the target (%.0f ms per update)",
              simd_distance(SIMD2(f * lw.x / lw.z, f * lw.y / lw.z) + c, target), Date().timeIntervalSince(t1) * 1000))
 
+// Dragging on the clay model: move the right wrist 20 cm towards the camera and 10 cm up, in 3D.
+// The fitted wrist should land on that point, depth included.
+var placed = result.people[0]
+let pin = model.kinematics(pose: fit.pose, betas: fit.betas).joints[joint("rightWrist")] + fit.translation
+    + SIMD3(0, -0.1, -0.2)
+placed.move(.rightWrist, to3D: pin, projected: SIMD2(f * pin.x / pin.z, f * pin.y / pin.z) + c)
+for (label, sil) in [("3D editing   ", true), ("3D live      ", false)] {
+    let b = try pipeline.refit(result, person: 0, with: placed, model: modelID, silhouette: sil).bodies[0]
+    let w = model.kinematics(pose: b.pose, betas: b.betas).joints[joint("rightWrist")] + b.translation
+    print(String(format: "%@: wrist lands %.1f cm from the placed point (depth off by %.1f cm)", label,
+                 simd_distance(w, pin) * 100, abs(w.z - pin.z) * 100))
+}
+
 // MARK: Age conditioning
 
 if let a = truthAge {

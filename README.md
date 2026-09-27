@@ -155,6 +155,8 @@ uv run --python 3.12 --with anny --with numpy --with scipy tools/convert_models.
 - **Body model:** the toolbar dropdown lists every converted model, grouped by family. Switching re-fits the current detections, and your edits are kept. For Anny, each person's row shows their apparent age.
 - **Views:** "Photo" composites the figures over the photo with a matching camera and ground shadows. "Studio" shows a three-quarter view on a backdrop. Drag to orbit and double-click to reset.
 - **Fixing the pose:** drag any joint on the photo. The person is re-fit live (about 20 ms per re-fit), and edited joints turn yellow. Dashed joints are Vision's guesses (out of frame or hidden), so check those first. The fitter trusts their 2D position and ignores Vision's 3D guess for them. Each person's ⋯ menu has *Swap Left and Right* (a common Vision failure), *Reset Edits* and *Remove Person*. Changing the body model keeps your edits.
+- **Posing in 3D:** drag a limb on the clay model itself. The nearest joint (it's highlighted as you hover) follows the pointer in the plane facing the camera, so orbit the Studio view and drag again to move it towards or away from the camera. The fitter holds a joint placed this way at its 3D position, not just its position in the photo. Drags that start off a body orbit the camera as before.
+- **Undo:** ⌘Z or ⌃Z undoes joint drags (on the photo or the model), swaps, resets, age changes and removed people; ⇧⌘Z or ⌃⇧Z redoes.
 - **Materials:** clay (with tool marks), smooth clay, plastic, glazed ceramic, marble, bronze, chrome, carved wood and wireframe. The colour palette applies to clay, plastic, ceramic and wireframe.
 - **Export (⌘E):** renders an image of exactly what's in the 3D view, including an orbited camera. You choose the size (window, 1080, 2048 or 4096 px), the format (PNG, JPEG or HEIC) and the background (scene, or transparent with shadows kept). The Export menu also offers USDZ, and OBJ with SMPL parameters.
 
@@ -185,7 +187,7 @@ It writes these to the output folder:
 
 **Self-test:** `swift run -c release armature-selftest --model <id>` works with any model. It renders a known pose, runs the whole pipeline on the render and reports the joint errors. It also checks:
 - that left and right come out correctly
-- that dragging a keypoint pulls the fitted body there, for both the full re-fit and the fast live update
+- that dragging a keypoint pulls the fitted body there, for both the full re-fit and the fast live update, and that a joint placed in 3D lands on that point, depth included
 - silhouette gains in shape and joint error
 - the depth HEIC round trip
 - synthetic monocular depth (relative and metric, plus noise and inverted maps that must be rejected), with depth priority and edited joints kept

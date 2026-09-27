@@ -138,6 +138,9 @@ public struct DetectedPerson: Sendable {
     public var region: CGRect
     /// Joints the user has dragged. The fitter trusts their 2D position and ignores Vision's 3D guess for them.
     public var edited = [Bool](repeating: false, count: BodyJoint.allCases.count)
+    /// Where the user placed a joint in 3D by dragging it on the clay model (camera space, metres, same
+    /// convention as `joints3D`). The fitter holds the body's joint there. Nil for joints edited only in 2D.
+    public var pinned3D = [SIMD3<Double>?](repeating: nil, count: BodyJoint.allCases.count)
     /// The person's segmentation mask, if Vision found one. Used to fit body shape to the silhouette.
     public var silhouette: PersonMask?
     /// Tight person box from the human detector (image pixels, top-left origin); the body crop for age models.
@@ -179,6 +182,14 @@ public struct DetectedPerson: Sendable {
         joints2D[joint.rawValue] = point
         confidence2D[joint.rawValue] = 1
         edited[joint.rawValue] = true
+        pinned3D[joint.rawValue] = nil
+    }
+
+    /// Places a joint in 3D (camera space, metres) and marks it as user-edited. `projected` is its pixel
+    /// position in the photo, which becomes the 2D keypoint so the photo overlay and the fit agree.
+    public mutating func move(_ joint: BodyJoint, to3D point: SIMD3<Double>, projected: SIMD2<Double>) {
+        move(joint, to: projected)
+        pinned3D[joint.rawValue] = point
     }
 
     /// Fixes Vision's most common failure: the person's left and right labelled the wrong way round.
@@ -193,6 +204,7 @@ public struct DetectedPerson: Sendable {
             confidence2D.swapAt(a.rawValue, b.rawValue)
             confidence3D.swapAt(a.rawValue, b.rawValue)
             edited.swapAt(a.rawValue, b.rawValue)
+            pinned3D.swapAt(a.rawValue, b.rawValue)
         }
     }
 }

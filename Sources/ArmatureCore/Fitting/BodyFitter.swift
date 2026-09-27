@@ -95,6 +95,15 @@ public struct BodyFitter {
         // User-edited joints: trust the dragged 2D position, drop Vision's (evidently wrong) 3D estimate.
         let w3 = targets.map { person.edited[$0.joint.rawValue] ? 0 : $0.weight * person.confidence3D[$0.joint.rawValue] }
         let w2 = targets.map { person.edited[$0.joint.rawValue] ? 3 * $0.weight : $0.weight }
+        // Joints the user placed in 3D (dragged on the clay model): hold them there, to ~2 cm.
+        let pins = targets.indices.compactMap { i in person.pinned3D[targets[i].joint.rawValue].map { (i, $0) } }
+        func pinResiduals(_ pts: [SIMD3<Double>], _ x: [Double], into r: inout [Double]) {
+            let t = SIMD3(x[transOffset], x[transOffset + 1], x[transOffset + 2])
+            for (i, pin) in pins {
+                let d = (pts[i] + t - pin) / 0.02
+                r += [d.x, d.y, d.z]
+            }
+        }
         let f = image.focalLengthPixels
         let c = SIMD2(Double(image.width) / 2, Double(image.height) / 2)
         // Person's height in pixels, from keypoints actually seen (Vision's guesses can lie far off-frame).
@@ -237,6 +246,7 @@ public struct BodyFitter {
                 r += [e.x, e.y]
             }
             residuals3D(pts, x, sigma: 0.08, into: &r)
+            pinResiduals(pts, x, into: &r)
             priorResiduals(x, into: &r)
             depthResiduals(x, pts, into: &r)
             return r
@@ -254,6 +264,7 @@ public struct BodyFitter {
                                     // (Vision's own 3D is ~18 cm off). Tuned on armature-selftest.
                                     let pts = targetPoints(x).points
                                     residuals3D(pts, x, sigma: 0.25, into: &r)
+                                    pinResiduals(pts, x, into: &r)
                                     priorResiduals(x, into: &r)
                                     depthResiduals(x, pts, into: &r)
                                 })

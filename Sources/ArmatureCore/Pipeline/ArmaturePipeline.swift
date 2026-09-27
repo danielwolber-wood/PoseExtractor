@@ -157,6 +157,15 @@ public final class ArmaturePipeline: @unchecked Sendable {
         return result
     }
 
+    /// Where each keypoint sits on a fitted body (camera space, metres), indexed by `BodyJoint.rawValue`;
+    /// nil for keypoints the body's model has no target for.
+    public func keypointPositions(of body: FittedBody) throws -> [SIMD3<Double>?] {
+        let fitter = BodyFitter(model: try model(body.model))
+        var out = [SIMD3<Double>?](repeating: nil, count: BodyJoint.allCases.count)
+        for (t, p) in zip(fitter.targets, fitter.points(of: body)) { out[t.joint.rawValue] = p }
+        return out
+    }
+
     /// Re-fits one person after their detection was edited. Fast enough (~10 ms) to call while dragging.
     /// Pass `silhouette: false` for interactive updates: skips the silhouette stage and warm-starts
     /// from the current fit (a few ms, even for Anny). The full re-fit runs when the edit ends.

@@ -18,7 +18,7 @@ final class StudioModel: ObservableObject {
     @Published var sourceImage: NSImage?
     /// Detections as edited by the user (drives the skeleton overlay).
     @Published private(set) var people: [DetectedPerson] = []
-    @Published private(set) var result: ArmatureResult?
+    @Published private(set) var result: ArmatureResult? { didSet { keypointCache = nil } }
     @Published private(set) var clayScene: ClayScene?
     /// Id of the body model to fit (see `availableModels`). Switching re-fits the current detections.
     @Published var bodyModel = ArmaturePipeline.defaultModelID { didSet { if bodyModel != oldValue { refitAll() } } }
@@ -99,6 +99,8 @@ final class StudioModel: ObservableObject {
             guard ageModel != oldValue, let pipeline, let result else { return }
             pipeline.ageModel = ageModel == Self.noAgeModel ? nil : ageModel
             pipeline.estimateAges(&people, image: result.image)
+            // Edits recorded before this would restore the old estimates.
+            undoManager?.removeAllActions(withTarget: self)
             refitAll()
         }
     }
@@ -171,6 +173,10 @@ final class StudioModel: ObservableObject {
     private var lastLiveRefit = Date.distantPast
     /// The on-screen SCNView, so image export can render from wherever the user has orbited to.
     weak var liveView: SCNView?
+    /// The window's undo manager; skeleton edits are registered with it (Edit ▸ Undo, ⌘Z / ⌃Z).
+    weak var undoManager: UndoManager?
+    /// Bumped by every full re-fit, so undo knows whether a snapshot's fit still matches the settings.
+    private var fitGeneration = 0
 
     var modelsMissing: Bool { modelsDirectory == nil }
 
@@ -179,6 +185,7 @@ final class StudioModel: ObservableObject {
         qualityReport = nil
         qualityStatus = ""
         currentURL = url
+        undoManager?.removeAllActions(withTarget: self)
         sourceImage = NSImage(contentsOf: url)
         refreshInstalledDepthBackends()
         detect()
@@ -201,6 +208,7 @@ final class StudioModel: ObservableObject {
                 await MainActor.run {
                     guard self.currentURL == url else { return }
                     self.originalPeople = result.people
+                    self.fitGeneration += 1
                     self.install(result)
                 }
             } catch {
@@ -235,8 +243,10 @@ final class StudioModel: ObservableObject {
     private func refitAll() {
         guard let pipeline, let result else { return }
         do {
-            install(try pipeline.fit(people: people, image: result.image, model: bodyModel, horizonAngle: result.horizonAngle,
-                                     depth: result.depth))
+            let refit = try pipeline.fit(people: people, image: result.image, model: bodyModel, horizonAngle: result.horizonAngle,
+                                         depth: result.depth)
+            fitGeneration += 1
+            install(refit)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -253,6 +263,7 @@ final class StudioModel: ObservableObject {
                 let refit = try pipeline.fit(people: people, image: image, model: bodyModel, horizonAngle: horizon, depth: depth)
                 await MainActor.run {
                     guard self.currentURL == url else { return }
+                    self.fitGeneration += 1
                     self.install(refit)
                 }
             } catch {
@@ -307,15 +318,20 @@ final class StudioModel: ObservableObject {
         if !dragSessionActive {
             dragSessionActive = true
             dragging = joint(near: start, radius: radius)
+            if dragging != nil { recordUndo("Move Joint") }
         }
         guard let d = dragging, let result else { return }
         let clamped = SIMD2(min(max(point.x, 0), Double(result.image.width)),
                             min(max(point.y, 0), Double(result.image.height)))
         people[d.person].move(d.joint, to: clamped)
-        // A fit takes ~10 ms; refit live, but no more often than the display can use it.
+        liveRefit(d.person)
+    }
+
+    /// A fit takes ~10 ms; refit live while dragging, but no more often than the display can use it.
+    private func liveRefit(_ index: Int) {
         if Date().timeIntervalSince(lastLiveRefit) > 1.0 / 30 {
             lastLiveRefit = Date()
-            refit(d.person, live: true)
+            refit(index, live: true)
         }
     }
 
@@ -323,9 +339,59 @@ final class StudioModel: ObservableObject {
         if let d = dragging { refit(d.person) }
         dragging = nil
         dragSessionActive = false
+        clayScene?.showHandle(at: nil)
+    }
+
+    // MARK: Dragging on the clay model
+
+    /// Where each person's keypoints sit on their fitted body (camera space); cleared whenever the fit changes.
+    private var keypointCache: [[SIMD3<Double>?]]?
+
+    /// Current 3D position of a keypoint on the fitted body (camera space, metres).
+    func keypointPosition(_ ref: JointRef) -> SIMD3<Double>? {
+        guard let pipeline, let result, result.bodies.indices.contains(ref.person) else { return nil }
+        if keypointCache == nil { keypointCache = result.bodies.map { (try? pipeline.keypointPositions(of: $0)) ?? [] } }
+        return keypointCache?[ref.person][safe: ref.joint.rawValue] ?? nil
+    }
+
+    /// The keypoint of `person` nearest to `point` (a spot on their clay body, camera space), within `radius`
+    /// metres. Fingers aren't offered: grabbing the hand moves the wrist, and the hand follows.
+    func keypoint(ofPerson person: Int, near point: SIMD3<Double>, radius: Double = 0.3) -> JointRef? {
+        guard people.indices.contains(person) else { return nil }
+        var best: (JointRef, Double)?
+        for j in BodyJoint.allCases where !j.isHand && people[person].isVisible(j) {
+            let ref = JointRef(person: person, joint: j)
+            guard let p = keypointPosition(ref) else { continue }
+            let d = simd_distance(p, point)
+            if d <= radius, d < (best?.1 ?? .infinity) { best = (ref, d) }
+        }
+        return best?.0
+    }
+
+    /// Highlights the keypoint the pointer is over on the clay model (nil: none).
+    func hover3D(_ ref: JointRef?) {
+        if dragging == nil, ref != hovered { hovered = ref }
+        clayScene?.showHandle(at: ref.flatMap(keypointPosition))
+    }
+
+    /// Moves a keypoint to a 3D position (camera space, metres) chosen by dragging on the clay model.
+    /// Call `endDrag()` when the drag ends.
+    func drag3D(_ ref: JointRef, to point: SIMD3<Double>) {
+        guard let result, people.indices.contains(ref.person), point.z > 0.1 else { return }
+        if !dragSessionActive {
+            dragSessionActive = true
+            dragging = ref
+            recordUndo("Move Joint")
+        }
+        let f = result.image.focalLengthPixels
+        let c = SIMD2(Double(result.image.width) / 2, Double(result.image.height) / 2)
+        people[ref.person].move(ref.joint, to3D: point, projected: SIMD2(f * point.x / point.z, f * point.y / point.z) + c)
+        clayScene?.showHandle(at: point)
+        liveRefit(ref.person)
     }
 
     func swapLeftRight(_ index: Int) {
+        recordUndo("Swap Left and Right")
         people[index].swapLeftRight()
         refit(index)
     }
@@ -333,11 +399,15 @@ final class StudioModel: ObservableObject {
     /// Sets (or, with nil, clears) a person's age. Overrides the estimate; re-fits.
     func setAge(_ index: Int, _ years: Double?) {
         guard people.indices.contains(index) else { return }
-        people[index].ageOverride = years.map { min(max($0, 0), 100) }
+        let age = years.map { min(max($0, 0), 100) }
+        guard age != people[index].ageOverride else { return }
+        recordUndo("Set Age")
+        people[index].ageOverride = age
         refit(index)
     }
 
     func resetEdits(_ index: Int) {
+        recordUndo("Reset Edits")
         let (estimate, given) = (people[index].estimatedAge, people[index].ageOverride)
         people[index] = originalPeople[index]
         people[index].estimatedAge = estimate
@@ -347,9 +417,55 @@ final class StudioModel: ObservableObject {
 
     func remove(_ index: Int) {
         guard var r = result else { return }
+        recordUndo("Remove Person")
         r.remove(person: index)
         originalPeople.remove(at: index)
         install(r)
+    }
+
+    // MARK: Undo
+
+    /// Everything an edit can change. The fit is kept so undo doesn't have to re-fit, unless a full re-fit
+    /// (another body model, depth backend...) has happened since.
+    private struct EditSnapshot {
+        let people: [DetectedPerson]
+        let originalPeople: [DetectedPerson]
+        let result: ArmatureResult
+        let generation: Int
+    }
+
+    private func snapshot() -> EditSnapshot? {
+        result.map { EditSnapshot(people: people, originalPeople: originalPeople, result: $0, generation: fitGeneration) }
+    }
+
+    private func recordUndo(_ name: String) {
+        if let s = snapshot() { registerUndo(s, name) }
+    }
+
+    private func registerUndo(_ s: EditSnapshot, _ name: String) {
+        guard let undoManager else { return }
+        undoManager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated { model.restore(s, name) }
+        }
+        undoManager.setActionName(name)
+    }
+
+    /// Returns to a snapshot, registering the current state so the undo can itself be undone (redo).
+    private func restore(_ s: EditSnapshot, _ name: String) {
+        guard !dragSessionActive, let current = snapshot() else { return }
+        registerUndo(current, name)
+        originalPeople = s.originalPeople
+        people = s.people
+        if s.generation != fitGeneration {
+            refitAll()
+        } else if s.result.bodies.count == current.result.bodies.count, let scene = clayScene {
+            result = s.result
+            for i in s.result.meshes.indices where s.result.meshes[i] != current.result.meshes[i] {
+                scene.updateBody(i, mesh: s.result.meshes[i], faces: s.result.faces)
+            }
+        } else {
+            install(s.result)
+        }
     }
 
     // MARK: Export
@@ -416,4 +532,8 @@ final class StudioModel: ObservableObject {
             phase = .failed(error.localizedDescription)
         }
     }
+}
+
+private extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }

@@ -371,6 +371,10 @@ extension BodyFitter {
             if reprojection(after[i], i) > reprojection(before[i], i) + 2 {
                 return "moved a user-edited joint (\(targets[i].joint))"
             }
+            if let pin = person.pinned3D[targets[i].joint.rawValue],
+               simd_distance(after[i], pin) > simd_distance(before[i], pin) + 0.03 {
+                return "moved a user-placed joint (\(targets[i].joint))"
+            }
         }
         if poseEnergy(candidate) > 1.5 * poseEnergy(baseline) + 0.5 { return "pose became implausible" }
         if cue.freeShape {

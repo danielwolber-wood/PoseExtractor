@@ -26,6 +26,7 @@ struct ArmatureApp: App {
 struct ContentView: View {
     // (No @State: its macro plugin ships with Xcode, and this builds with the Command Line Tools alone.)
     @StateObject private var model = StudioModel()
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         Group {
@@ -50,6 +51,11 @@ struct ContentView: View {
             return true
         }
         .toolbar { toolbar }
+        .onAppear {
+            model.undoManager = undoManager
+            ControlZ.install()
+        }
+        .onChange(of: undoManager) { _, u in model.undoManager = u }
     }
 
     @ToolbarContentBuilder
@@ -218,7 +224,7 @@ struct SourcePanel: View {
                         .help("Refine body shape and pose so the body's outline matches the mask")
                     Spacer()
                     if model.showSkeleton && model.result != nil {
-                        Text("Drag joints to fix the pose")
+                        Text("Drag joints to fix the pose · ⌘Z to undo")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -342,7 +348,7 @@ struct ScenePanel: View {
                                  contentMode: .fit)
                 VStack {
                     Spacer()
-                    Text("Drag to orbit · scroll to zoom · double-click to reset · ⌘E to export an image")
+                    Text("Drag a limb to pose it · drag elsewhere to orbit · scroll to zoom · double-click to reset")
                         .font(.caption)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(.ultraThinMaterial, in: Capsule())
@@ -368,7 +374,9 @@ struct ClaySceneView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> SCNView {
-        let v = SCNView()
+        let v = ClaySCNView()
+        v.clayScene = clayScene
+        v.model = model
         v.scene = clayScene.scene
         v.antialiasingMode = .multisampling4X
         v.allowsCameraControl = true
@@ -405,6 +413,129 @@ struct ClaySceneView: NSViewRepresentable {
             v.pointOfView = cam
         }
         clayScene.setView(view)
+    }
+}
+
+/// SCNView that poses a body when a drag starts on it: the nearest keypoint to where the body was grabbed
+/// follows the pointer in the plane facing the camera (orbit, then drag again, to move it in depth).
+/// Drags that start off the bodies orbit the camera as usual.
+final class ClaySCNView: SCNView {
+    weak var clayScene: ClayScene?
+    weak var model: StudioModel?
+
+    /// A press on a body: the keypoint to move, the plane it moves in (SceneKit world space) and the offset
+    /// from the grab point to the keypoint, so it doesn't jump to the pointer.
+    private struct Grab {
+        let joint: JointRef
+        let planePoint: SIMD3<Float>
+        let planeNormal: SIMD3<Float>
+        let offset: SIMD3<Float>
+        let start: CGPoint
+        var moved = false
+    }
+    private var grab: Grab?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.owner === self }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        guard grab == nil else { return }
+        let joint = pick(at: convert(event.locationInWindow, from: nil))?.joint
+        model?.hover3D(joint)
+        (joint == nil ? NSCursor.arrow : NSCursor.openHand).set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        if grab == nil { model?.hover3D(nil); NSCursor.arrow.set() }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        guard event.clickCount == 1, let hit = pick(at: p), let model, let pov = pointOfView,
+              let keypoint = model.keypointPosition(hit.joint) else {
+            super.mouseDown(with: event)
+            return
+        }
+        let k = Self.sceneKit(keypoint)
+        let normal = simd_normalize(pov.simdWorldFront)
+        // Where the pointer ray meets the keypoint's plane (not the surface), so the offset stays constant.
+        let onPlane = ray(at: p).flatMap { Self.intersect($0, planePoint: k, normal: normal) } ?? hit.surface
+        grab = Grab(joint: hit.joint, planePoint: k, planeNormal: normal, offset: k - onPlane, start: p)
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard var g = grab else { super.mouseDragged(with: event); return }
+        let p = convert(event.locationInWindow, from: nil)
+        // A click without a drag shouldn't mark the joint as edited.
+        if !g.moved, hypot(p.x - g.start.x, p.y - g.start.y) < 3 { return }
+        g.moved = true
+        grab = g
+        guard let r = ray(at: p), let q = Self.intersect(r, planePoint: g.planePoint, normal: g.planeNormal) else { return }
+        let w = q + g.offset
+        model?.drag3D(g.joint, to: SIMD3(Double(w.x), -Double(w.y), -Double(w.z)))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let g = grab else { super.mouseUp(with: event); return }
+        grab = nil
+        if g.moved { model?.endDrag() }
+        model?.hover3D(pick(at: convert(event.locationInWindow, from: nil))?.joint)
+        NSCursor.arrow.set()
+    }
+
+    /// The keypoint nearest to where the pointer touches a clay body, and that surface point (world space).
+    private func pick(at p: CGPoint) -> (joint: JointRef, surface: SIMD3<Float>)? {
+        guard let scene = clayScene, let model else { return nil }
+        let hits = hitTest(p, options: [.searchMode: SCNHitTestSearchMode.all.rawValue, .ignoreHiddenNodes: true])
+        for h in hits {
+            guard let person = scene.bodyNodes.firstIndex(where: { $0 === h.node }) else { continue }
+            let w = SIMD3<Float>(h.worldCoordinates)
+            guard let joint = model.keypoint(ofPerson: person, near: SIMD3(Double(w.x), -Double(w.y), -Double(w.z)))
+            else { return nil }
+            return (joint, w)
+        }
+        return nil
+    }
+
+    private func ray(at p: CGPoint) -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
+        let a = SIMD3<Float>(unprojectPoint(SCNVector3(p.x, p.y, 0)))
+        let b = SIMD3<Float>(unprojectPoint(SCNVector3(p.x, p.y, 1)))
+        let d = b - a
+        return simd_length(d) > 0 ? (a, simd_normalize(d)) : nil
+    }
+
+    private static func intersect(_ r: (origin: SIMD3<Float>, direction: SIMD3<Float>), planePoint: SIMD3<Float>,
+                                  normal: SIMD3<Float>) -> SIMD3<Float>? {
+        let denom = simd_dot(r.direction, normal)
+        guard abs(denom) > 1e-5 else { return nil }
+        let t = simd_dot(planePoint - r.origin, normal) / denom
+        return t > 0 ? r.origin + t * r.direction : nil
+    }
+
+    /// Camera space (CV: y down, z forward) → SceneKit world space.
+    private static func sceneKit(_ p: SIMD3<Double>) -> SIMD3<Float> { SIMD3(Float(p.x), Float(-p.y), Float(-p.z)) }
+}
+
+/// ⌃Z / ⌃⇧Z as well as ⌘Z / ⇧⌘Z for undo and redo (Edit menu), whatever has focus.
+enum ControlZ {
+    private static var monitor: Any?
+
+    @MainActor static func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
+            guard event.charactersIgnoringModifiers?.lowercased() == "z", mods == .control || mods == [.control, .shift],
+                  let undo = event.window?.firstResponder?.undoManager ?? event.window?.undoManager else { return event }
+            if mods.contains(.shift) { if undo.canRedo { undo.redo() } } else if undo.canUndo { undo.undo() }
+            return nil
+        }
     }
 }
 
