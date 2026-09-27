@@ -25,6 +25,7 @@ options:
       --focal-mm <mm>    35 mm-equivalent lens focal length (default: EXIF, else 50)
       --models <dir>     converted model directory (default: ./Models or $ARMATURE_MODELS)
       --no-silhouette    skip fitting body shape to the person segmentation mask
+      --no-anatomical-limits  fit without range-of-motion limits, self-collision and limb-depth flips
       --depth-backend <b> monocular depth when the photo has no LiDAR/TrueDepth depth:
                          none | auto | depth-anything-v2-small | depth-pro (default: auto — the first
                          installed; nothing if none is). A missing model is a warning, not an error.
@@ -73,6 +74,7 @@ var style = ClayStyle()
 var modelsPath: String?
 var writeUSDZ = true
 var useSilhouette = true
+var anatomicalPriors = true
 var renderSize = 2048.0
 var focalMM: Double?
 var background = ClayScene.Background.scene
@@ -129,6 +131,7 @@ while !args.isEmpty {
     case "--models": modelsPath = value()
     case "--no-usdz": writeUSDZ = false
     case "--no-silhouette": useSilhouette = false
+    case "--no-anatomical-limits": anatomicalPriors = false
     case "--depth-backend":
         let v = value()
         guard let m = MonocularDepthMode(argument: v) else {
@@ -158,6 +161,7 @@ do {
     let image = try LoadedImage(url: inputURL, focalLength35mm: focalMM)
     let pipeline = ArmaturePipeline(modelsDirectory: modelsURL)
     pipeline.useSilhouette = useSilhouette
+    pipeline.anatomicalPriors = anatomicalPriors
     pipeline.ageModel = ageModel ?? pipeline.availableAgeModels.first?.id
     if let id = pipeline.ageModel, !pipeline.availableAgeModels.contains(where: { $0.id == id }) {
         fail("unknown age model '\(id)' (see --list-models)")
