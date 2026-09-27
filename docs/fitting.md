@@ -1,6 +1,6 @@
 # How the fit works
 
-Code: `Sources/ClayCore/Fitting/BodyFitter.swift`.
+Code: `Sources/ArmatureCore/Fitting/BodyFitter.swift`.
 
 1. **Initial orientation:** a Kabsch alignment of the rest-pose torso onto Vision's torso.
 2. **Stage 1 (3D):** solves for pose, shape and a free scale factor against Vision's root-relative joints. The scale is free because Vision reports every person at a nominal 1.8 m, so its scale carries no real information. Body size therefore comes from the shape prior.
@@ -25,14 +25,14 @@ Code: `Sources/ClayCore/Fitting/BodyFitter.swift`.
      metres. See [Monocular depth](depth.md).
    - **Not passed to Vision:** with depth that lacks camera-calibration data, Vision's own depth-aware 3D request hits an internal assertion that kills the process. That path is deliberately not used.
 7. **Keypoint trust:** Vision invents positions for joints it can't see. Limbs its 2D detector doesn't confirm, and anything projecting outside the photo, lose almost all weight, so truncated legs fall back to a natural pose. Face keypoints (nose, eyes, ears) come from the 2D detector and are matched to SMPL surface vertices; when they're found, they override Vision's 3D head.
-8. **Silhouette (stage 3):** code in `Sources/ClayCore/Fitting/SilhouetteFit.swift`.
+8. **Silhouette (stage 3):** code in `Sources/ArmatureCore/Fitting/SilhouetteFit.swift`.
    - Vision's person instance segmentation gives each person a mask; the mask their keypoints fall in.
    - Body shape, placement, and trunk and limb pose are then refined ICP-style. Each round picks the body's outline vertices, the vertices whose surface grazes the view ray.
    - The body's outline is pushed inside the mask. A weaker term, capped at 3% of body height, pulls it out to the mask's edge. The asymmetry is because clothing and hair only ever make the mask bigger than the body.
    - The result is kept only if less of the body lies outside the mask without the overlap collapsing.
    - On the self-test (a heavier-than-average body), body-shape error drops from 4.9 cm to 1.8 cm.
    - In the app, this stage (about 100 ms) is skipped while you drag and runs when you let go.
-   - For debugging, set `CLAY_DEBUG_MASK=/tmp/m.ppm` to dump the mask with the body before (red) and after (green).
+   - For debugging, set `ARMATURE_DEBUG_MASK=/tmp/m.ppm` to dump the mask with the body before (red) and after (green).
 9. **Priors:** the pose prior holds joints Vision can't see (hands, feet, collars, neck twist) near rest. It also spreads spine bending across the three spine joints and restricts knees and elbows to hinge motion.
 
 Vision's 3D joints sit in slightly different anatomical places than SMPL's; hips are the worst, about 9 cm wider apart. Those joints are down-weighted rather than trusted.

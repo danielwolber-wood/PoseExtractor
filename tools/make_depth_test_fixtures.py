@@ -1,9 +1,9 @@
-"""Generates the tiny Core ML fixtures used by `clay-depth-selftest`.
+"""Generates the tiny Core ML fixtures used by `armature-depth-selftest`.
 
     .cache/iqa-env/bin/python tools/make_depth_test_fixtures.py
 
 (any Python with coremltools >= 7 works). Writes
-`Sources/clay-depth-selftest/Fixtures.swift`, which embeds each .mlpackage's files as base64
+`Sources/armature-depth-selftest/Fixtures.swift`, which embeds each .mlpackage's files as base64
 so the self-test exercises the real Core ML load / compile / predict path without any
 downloaded model. The fixtures mimic the I/O contracts of the real depth backends:
 
@@ -25,7 +25,7 @@ from coremltools.converters.mil import Builder as mb
 from coremltools.proto import FeatureTypes_pb2
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-OUT = ROOT / "Sources" / "clay-depth-selftest" / "Fixtures.swift"
+OUT = ROOT / "Sources" / "armature-depth-selftest" / "Fixtures.swift"
 
 
 def relative_fixture(path: pathlib.Path):
@@ -44,7 +44,7 @@ def relative_fixture(path: pathlib.Path):
     out.type.imageType.width = w
     out.type.imageType.height = h
     out.type.imageType.colorSpace = FeatureTypes_pb2.ImageFeatureType.GRAYSCALE_FLOAT16
-    spec.description.metadata.shortDescription = "clay-depth-selftest relative fixture"
+    spec.description.metadata.shortDescription = "armature-depth-selftest relative fixture"
     ct.models.MLModel(spec, weights_dir=m.weights_dir).save(str(path))
 
 
@@ -62,7 +62,7 @@ def pro_fixture(path: pathlib.Path):
     m = ct.convert(prog, inputs=[ct.ImageType(name="image", shape=(1, 3, s, s), color_layout=ct.colorlayout.RGB,
                                               scale=2 / 255.0, bias=[-1, -1, -1])],
                    minimum_deployment_target=ct.target.macOS14, compute_precision=ct.precision.FLOAT16)
-    m.short_description = "clay-depth-selftest Depth Pro-like fixture"
+    m.short_description = "armature-depth-selftest Depth Pro-like fixture"
     m.save(str(path))
 
 

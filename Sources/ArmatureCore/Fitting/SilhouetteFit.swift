@@ -102,7 +102,7 @@ extension BodyFitter {
         }
 
         let after = overlap(x)
-        if let path = ProcessInfo.processInfo.environment["CLAY_DEBUG_MASK"] {
+        if let path = ProcessInfo.processInfo.environment["ARMATURE_DEBUG_MASK"] {
             // Debug aid: mask (grey), body before (red) and after (green), as a PPM.
             let r0 = mask.rasterize(vertices(x0, allVertices).map(project), faces: model.faces)
             let r1 = mask.rasterize(vertices(x, allVertices).map(project), faces: model.faces)

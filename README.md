@@ -1,4 +1,4 @@
-# Clay Pose
+# Armature
 
 Photo → people → SMPL bodies → clay figures, running natively on macOS (Apple Silicon).
 
@@ -17,12 +17,13 @@ Vision. Fitting takes about 10 ms per person, and a warm end-to-end run takes ab
 
 ```text
 Sources/
-  ClayCore/          Shared library: Models, Detection, Fitting, Rendering, Pipeline
-  ClayStudio/        SwiftUI desktop app
-  clay/              Command-line app
-  clay-selftest/     Synthetic end-to-end validation executable
-  clay-depth-selftest/ Monocular depth checks (no models needed)
-  clay-icon/         App icon renderer
+  ArmatureCore/      Shared library: Models, Detection, Fitting, Rendering, Pipeline, Depth, Quality
+  ArmatureApp/       SwiftUI desktop app
+  armature/          Command-line app
+  armature-selftest/ Synthetic end-to-end validation executable
+  armature-depth-selftest/   Monocular depth checks (no models needed)
+  armature-quality-selftest/ Image-quality checks (no models needed)
+design/icon/         App icon (Icon Composer file v1.icon, plus source SVG drafts)
 scripts/             App build and packaging scripts
 tools/               Offline Python model converters
 docs/                Implementation notes
@@ -71,7 +72,7 @@ Anny's shape space covers all ages, so knowing a person's age helps it a lot. Th
 
 **Checks:**
 - **Estimators:** the Core ML versions match the original PyTorch and TensorFlow models on identical crops of the test photo (MiVOLO 22.5 vs 22.53, FaceAge 23.95 vs 23.86).
-- **Conditioning:** the self-test (`clay-selftest --model anny --age <years>`) compares fits with and without the age.
+- **Conditioning:** the self-test (`armature-selftest --model anny --age <years>`) compares fits with and without the age.
 
 | True age | Shape error, age not given | Shape error, age given | Height (given / truth) |
 |---|---|---|---|
@@ -106,7 +107,7 @@ installed, nothing changes.
 | **Depth Anything V2 Small** (default when installed) | Relative inverse depth (no scale) | 48 MB | Apache-2.0 | `tools/convert_depth_models.py depth-anything-v2-small` (Apple's Core ML export) |
 | **Depth Pro** | Metric depth + field of view | 1.9 GB | Code: Apple sample-code licence; weights: `apple-amlr` (research) | `tools/convert_depth_models.py depth-pro` (offline conversion) |
 
-- **Where:** `Models/depth/<id>/` in any models folder, e.g. `~/Library/Application Support/ClayStudio/Models`,
+- **Where:** `Models/depth/<id>/` in any models folder, e.g. `~/Library/Application Support/Armature/Models`,
   which the app searches but `make_app.sh` doesn't bundle.
 - **Priority:** embedded metric depth, then the selected backend, then another installed one, then none.
   A missing model is a warning, never an error.
@@ -142,12 +143,12 @@ uv run --python 3.12 --with anny --with numpy --with scipy tools/convert_models.
 
 - **First command:** converts SMPL, plus SMPL-X if its zip is present.
 - **Second command:** also converts Anny. It downloads Anny and PyTorch into a throwaway environment; the app itself never needs Python.
-- **Third command:** builds `build/ClayStudio.app` and `build/clay`.
+- **Third command:** builds `build/Armature.app` and `build/armature`. Compiling the icon needs Xcode 26 or later (not just the Command Line Tools).
 - **Reading the models:** the converter reads straight from the zips, so nothing needs to be unzipped. It stubs out `chumpy`, so that doesn't need installing either.
 
 ## Use
 
-**App:** `open build/ClayStudio.app`, then drop in a photo.
+**App:** `open build/Armature.app`, then drop in a photo.
 
 - **Masks:** the *Masks* checkbox shows each person's segmentation mask, and *Fit silhouette* toggles the silhouette stage. Each person's row shows how much of the body lies outside its mask.
 - **Depth:** the toolbar's *Depth* menu picks the monocular depth backend (or none). A status line under the photo says what it did, or why it wasn't used.
@@ -160,7 +161,7 @@ uv run --python 3.12 --with anny --with numpy --with scipy tools/convert_models.
 **CLI:**
 
 ```bash
-build/clay photo.jpg -o out/photo -m marble --size 4096 --transparent
+build/armature photo.jpg -o out/photo -m marble --size 4096 --transparent
 ```
 
 Options:
@@ -182,14 +183,14 @@ It writes these to the output folder:
 - `person_N.obj`
 - `body_params.json`, with the model id, pose, shape, translation, keypoints, fit errors and (for Anny) phenotype, in the OpenCV camera frame. It also records the depth source and diagnostics (`depth`), and what monocular depth did to each person (`monocularDepth`).
 
-**Self-test:** `swift run -c release clay-selftest --model <id>` works with any model. It renders a known pose, runs the whole pipeline on the render and reports the joint errors. It also checks:
+**Self-test:** `swift run -c release armature-selftest --model <id>` works with any model. It renders a known pose, runs the whole pipeline on the render and reports the joint errors. It also checks:
 - that left and right come out correctly
 - that dragging a keypoint pulls the fitted body there, for both the full re-fit and the fast live update
 - silhouette gains in shape and joint error
 - the depth HEIC round trip
 - synthetic monocular depth (relative and metric, plus noise and inverted maps that must be rejected), with depth priority and edited joints kept
 
-`swift run -c release clay-depth-selftest` checks the depth plumbing without any model.
+`swift run -c release armature-depth-selftest` checks the depth plumbing without any model.
 
 **Accuracy** (self-test, averaged over three poses, after the silhouette stage):
 
@@ -203,7 +204,7 @@ It writes these to the output folder:
 - **Noise:** results vary by about 0.5 cm between runs.
 - **Surface error:** SMPL-X's is inflated by its detailed hands and face.
 
-**Icon:** `Sources/clay-icon` renders the app icon with the same pipeline, and `make_app.sh` turns it into `AppIcon.icns`.
+**Icon:** `design/icon/v1.icon` is an Icon Composer file. `make_app.sh` compiles it with Xcode's `actool` into `Assets.car` and `AppIcon.icns`.
 
 ## Image quality
 
@@ -212,7 +213,7 @@ MUSIQ, HyperIQA, NIMA, BRISQUE, CLIP-IQA, NIQE, ARNIQA, and LIQE. Export Scores 
 CSV or JSON. Analysis is independent of person detection and pose edits.
 
 ```bash
-build/clay quality examples/photos -o out/quality.csv
+build/armature quality examples/photos -o out/quality.csv
 ```
 
 This runs natively: six Core ML networks plus Swift statistical metrics. Convert the

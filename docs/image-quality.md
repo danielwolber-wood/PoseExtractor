@@ -1,6 +1,6 @@
 # Native image-quality analysis
 
-ClayStudio's **Image quality → Analyze Quality** scores the source photo independently
+The app's **Image quality → Analyze Quality** scores the source photo independently
 of people, body models, or pose edits. Results stay attached to the open image until
 another image is opened or Analyze Again is selected. Export Scores writes CSV or JSON.
 The analysis runs off the main thread; cancellation takes effect between metrics and crop predictions.
@@ -8,8 +8,8 @@ The analysis runs off the main thread; cancellation takes effect between metrics
 The CLI also scores a file or recursively scans a folder, without loading body models:
 
 ```sh
-build/clay quality examples/photos -o out/quality.csv
-build/clay quality photo.jpg --metrics nima,brisque,niqe -o out/quality.json
+build/armature quality examples/photos -o out/quality.csv
+build/armature quality photo.jpg --metrics nima,brisque,niqe -o out/quality.json
 ```
 
 Supported folder extensions are JPG/JPEG, PNG, HEIC/HEIF, TIFF, BMP, and WebP; actual
@@ -35,7 +35,7 @@ Conversion downloads upstream weights into `.cache/iqa/`. Converted assets are k
 `Models/quality/<metric>/` and excluded from Git. The float32 assets total approximately
 1.1 GB. A `quality.json` manifest records the source version, input contract, scale,
 and tensor parity checks. Failed conversions do not replace installed models.
-The native runtime compiles and caches packages in `~/Library/Caches/ClayPose/quality`.
+The native runtime compiles and caches packages in `~/Library/Caches/Armature/quality`.
 Weights retain their respective upstream terms; conversion does not relicense them.
 
 | Script metric | Native implementation |
@@ -51,7 +51,7 @@ Weights retain their respective upstream terms; conversion does not relicense th
 | `align-one` | **Unavailable:** not a registered metric in PyIQA 0.1.14.1; no replacement is silently selected |
 
 `all` converts the eight valid metrics. The original script catches the invalid
-`align-one` name and skips it. Clay records that problem explicitly. If another model
+`align-one` name and skips it. Armature records that problem explicitly. If another model
 was intended, its exact identity and weights are needed before adding it.
 
 ## Numerical behavior and limits
@@ -73,7 +73,7 @@ was intended, its exact identity and weights are needed before adding it.
 ## Validation
 
 ```sh
-swift run -c release clay-quality-selftest
+swift run -c release armature-quality-selftest
 .cache/iqa-env/bin/python tools/validate_quality_models.py out/quality-validation
 ```
 

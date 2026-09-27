@@ -1,4 +1,4 @@
-import ClayCore
+import ArmatureCore
 import CoreGraphics
 import Foundation
 
@@ -24,7 +24,7 @@ do {
     let ctx = CGContext(data: nil, width: 32, height: 24, bitsPerComponent: 8, bytesPerRow: 128,
                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
     let url = dir.appendingPathComponent("image.png")
-    try ClayExport.writePNG(ctx.makeImage()!, to: url)
+    try ArmatureExport.writePNG(ctx.makeImage()!, to: url)
     let analyzer = ImageQualityAnalyzer(modelsDirectory: dir)
     let missing = try analyzer.analyze(url: url, metrics: ["nima", "align-one"])
     try check(missing.width == 32 && missing.scores.count == 2, "Metadata without body models")

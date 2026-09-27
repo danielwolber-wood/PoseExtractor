@@ -1,4 +1,4 @@
-import ClayCore
+import ArmatureCore
 import CoreGraphics
 import CoreML
 import CoreVideo
@@ -7,11 +7,11 @@ import ImageIO
 import UniformTypeIdentifiers
 
 // Deterministic checks of the monocular depth plumbing. Needs no downloaded model and no body model:
-//   swift run -c release clay-depth-selftest
+//   swift run -c release armature-depth-selftest
 // The Core ML path (compile, load, predict, tensor decoding) runs on tiny generated fixtures
 // (Fixtures.swift, from tools/make_depth_test_fixtures.py) that mimic the real models' I/O contracts.
 //
-//   swift run -c release clay-depth-selftest --bench photo.jpg [--runs 5]
+//   swift run -c release armature-depth-selftest --bench photo.jpg [--runs 5]
 // instead times each *installed* backend on a photo: model load (compile on first use), the first
 // (cold) prediction and warm predictions, and summarises its output.
 
@@ -19,8 +19,8 @@ if let i = CommandLine.arguments.firstIndex(of: "--bench"), i + 1 < CommandLine.
     let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     let runs = CommandLine.arguments.firstIndex(of: "--runs").flatMap { Int(CommandLine.arguments[$0 + 1]) } ?? 5
     let image = try LoadedImage(url: url)
-    let models = ClayPipeline.defaultModelsDirectory() ?? URL(fileURLWithPath: "Models")
-    let installed = ClayPipeline(modelsDirectory: models).installedDepthModels()
+    let models = ArmaturePipeline.defaultModelsDirectory() ?? URL(fileURLWithPath: "Models")
+    let installed = ArmaturePipeline(modelsDirectory: models).installedDepthModels()
     print("\(url.lastPathComponent): \(image.width)×\(image.height), focal \(Int(image.focalLengthPixels)) px (\(image.focalFromEXIF ? "EXIF" : "assumed"))")
     if installed.isEmpty { print("no depth models installed (see docs/depth.md)") }
     for b in MonocularDepthBackend.allCases {
@@ -63,7 +63,7 @@ func check(_ condition: @autoclosure () throws -> Bool, _ message: String) {
 func close(_ a: Double, _ b: Double, _ tol: Double) -> Bool { abs(a - b) <= tol }
 
 let fm = FileManager.default
-let tmp = fm.temporaryDirectory.appendingPathComponent("clay-depth-selftest-\(UUID().uuidString)")
+let tmp = fm.temporaryDirectory.appendingPathComponent("armature-depth-selftest-\(UUID().uuidString)")
 try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
 defer { try? fm.removeItem(at: tmp) }
 
@@ -89,13 +89,14 @@ func writeFixture(_ files: [String: String], to package: URL) throws {
 do {
     let env = tmp.appendingPathComponent("env"), models = tmp.appendingPathComponent("models"),
         bundle = tmp.appendingPathComponent("bundle"), support = tmp.appendingPathComponent("support")
-    let roots = DepthModelLocator.searchRoots(modelsDirectory: models, environment: ["CLAY_MODELS": env.path],
+    let roots = DepthModelLocator.searchRoots(modelsDirectory: models, environment: ["ARMATURE_MODELS": env.path, "CLAY_MODELS": "/legacy"],
                                               bundleResources: bundle, currentDirectory: models.deletingLastPathComponent(),
                                               executable: nil, applicationSupport: support)
-    check(roots.first == env, "CLAY_MODELS is searched first")
+    check(roots.first == env, "ARMATURE_MODELS is searched first, ahead of the pre-rename CLAY_MODELS")
+    check(ModelLocations.environmentDirectory(["CLAY_MODELS": env.path]) == env, "CLAY_MODELS still works on its own")
     check(roots.count == Set(roots.map(\.path)).count, "search roots are de-duplicated")
-    check(roots.contains(bundle.appendingPathComponent("Models")) && roots.last == support.appendingPathComponent("ClayStudio/Models"),
-          "bundle and Application Support are searched, Application Support last")
+    check(roots.contains(bundle.appendingPathComponent("Models")) && Array(roots.suffix(2)) == [support.appendingPathComponent("Armature/Models"), support.appendingPathComponent("ClayStudio/Models")],
+          "bundle and Application Support are searched, Application Support (new, then pre-rename) last")
 
     let da = models.appendingPathComponent("depth/depth-anything-v2-small")
     try touchPackage(da.appendingPathComponent("DepthAnythingV2SmallF32.mlpackage"))
@@ -112,7 +113,7 @@ do {
     try touchPackage(envDA)
     check(DepthModelLocator.locate(.depthAnythingV2Small, roots: roots)?.modelURL.standardizedFileURL.path == envDA.standardizedFileURL.path,
           "an earlier root wins; Apple's file name is accepted directly in Models/depth/")
-    let pro = support.appendingPathComponent("ClayStudio/Models/depth/depth-pro")
+    let pro = support.appendingPathComponent("Armature/Models/depth/depth-pro")
     try touchPackage(pro.appendingPathComponent("model.mlpackage"))
     try Data(#"{"schemaVersion": 1}"#.utf8).write(to: pro.appendingPathComponent("depth.json"))
     let proLoc = DepthModelLocator.locate(.depthPro, roots: roots)
@@ -387,7 +388,7 @@ do {
     }
 
     // Pipeline: missing models are warnings; a broken selected model falls back; embedded metric wins.
-    let pipeline = ClayPipeline(modelsDirectory: tmp.appendingPathComponent("no-models"))
+    let pipeline = ArmaturePipeline(modelsDirectory: tmp.appendingPathComponent("no-models"))
     for b in MonocularDepthBackend.allCases { pipeline.depthModelPaths[b] = tmp.appendingPathComponent("missing-\(b.rawValue)") }
     pipeline.monocularDepthMode = .backend(.depthPro)
     pipeline.monocularDepthFallback = false

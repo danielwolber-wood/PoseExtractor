@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds a release ClayStudio.app (with the converted SMPL models inside) and the `clay` CLI.
+# Builds a release Armature.app (with the converted SMPL models inside) and the `armature` CLI.
 set -euo pipefail
 cd "${0:A:h}/.."
 
@@ -8,31 +8,37 @@ cd "${0:A:h}/.."
 swift build -c release
 BIN=$(swift build -c release --show-bin-path)
 
-APP=build/ClayStudio.app
+APP=build/Armature.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/ClayStudio" "$APP/Contents/MacOS/"
+cp "$BIN/ArmatureApp" "$APP/Contents/MacOS/Armature"
 cp -R Models "$APP/Contents/Resources/Models"
 
-# App icon, rendered by the pipeline itself (see Sources/clay-icon).
-ICONSET=build/AppIcon.iconset
-rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-"$BIN/clay-icon" build/icon_1024.png >/dev/null
-for s in 16 32 128 256 512; do
-  sips -z $s $s build/icon_1024.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) build/icon_1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# App icon, from the Icon Composer file. actool ships with Xcode (not the Command Line Tools) and names
+# the compiled icon after the source file, so compile a copy called AppIcon.icon.
+ICON_SRC=design/icon/v1.icon
+DEV=$(xcode-select -p)
+[[ -x "$DEV/usr/bin/actool" ]] || DEV=/Applications/Xcode.app/Contents/Developer
+rm -rf build/AppIcon.icon build/AppIcon.iconset build/icon_1024.png
+cp -R "$ICON_SRC" build/AppIcon.icon
+if ! DEVELOPER_DIR="$DEV" xcrun actool build/AppIcon.icon --compile "$APP/Contents/Resources" --app-icon AppIcon \
+    --platform macosx --target-device mac --minimum-deployment-target 14.0 \
+    --output-partial-info-plist build/AppIcon-partial.plist --output-format human-readable-text >/dev/null; then
+  echo "actool couldn't compile $ICON_SRC. It needs Xcode 26 or later with its license accepted" >&2
+  echo "(sudo xcodebuild -license accept; xcodebuild -runFirstLaunch)." >&2
+  exit 1
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Clay Studio</string>
-  <key>CFBundleIdentifier</key><string>local.claystudio</string>
-  <key>CFBundleExecutable</key><string>ClayStudio</string>
+  <key>CFBundleName</key><string>Armature</string>
+  <key>CFBundleIdentifier</key><string>local.armature</string>
+  <key>CFBundleExecutable</key><string>Armature</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -40,5 +46,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 codesign --force --sign - "$APP"
-cp "$BIN/clay" build/clay
-echo "Built $APP and build/clay"
+cp "$BIN/armature" build/armature
+echo "Built $APP and build/armature"

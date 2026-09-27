@@ -1,5 +1,5 @@
 import AppKit
-import ClayCore
+import ArmatureCore
 import SwiftUI
 
 /// Draws each person's detected skeleton over the photo and lets the user drag joints to fix it.

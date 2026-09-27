@@ -1,7 +1,7 @@
 # Monocular depth (Depth Anything V2, Depth Pro)
 
 Photos from LiDAR/TrueDepth cameras carry a metric depth map, and the fitter uses it (see
-[How the fit works](fitting.md), section 6). For every other photo, Clay Pose can estimate depth
+[How the fit works](fitting.md), section 6). For every other photo, Armature can estimate depth
 from the image itself with one of two optional Core ML models. They are installed locally, never
 downloaded by the app, and never required: with none installed, nothing changes.
 
@@ -13,9 +13,9 @@ downloaded by the app, and never required: with none installed, nothing changes.
 Requirements: macOS 14+, Apple Silicon (Core ML uses the Neural Engine/GPU; it also runs on the
 CPU, slowly), and for Depth Pro ~2 GB of free memory while it runs. The first use of a model compiles
 it for this Mac (Depth Anything: ~30 s once); the compiled model is cached in
-`~/Library/Caches/ClayPose/depth`, and later launches load it in well under a second.
+`~/Library/Caches/Armature/depth`, and later launches load it in well under a second.
 
-Measured on an M-series Mac, one process, `clay-depth-selftest --bench examples/photos/012.jpg`:
+Measured on an M-series Mac, one process, `armature-depth-selftest --bench examples/photos/012.jpg`:
 
 | | Load (compiled) | First prediction | Warm prediction |
 |---|---|---|---|
@@ -29,9 +29,9 @@ stopped, so the Neural Engine isn't used for it.
 ## Install
 
 Models live in `Models/depth/<id>/`, under any models directory the app searches, in this order:
-`$CLAY_MODELS`, the pipeline's models directory, the app bundle's `Resources/Models`, `./Models`,
+`$ARMATURE_MODELS` (or the older `$CLAY_MODELS`), the pipeline's models directory, the app bundle's `Resources/Models`, `./Models`,
 `Models` next to (or up to five levels above) the executable, and
-`~/Library/Application Support/ClayStudio/Models`. The first match wins.
+`~/Library/Application Support/Armature/Models`, then the pre-rename `ClayStudio/Models`. The first match wins.
 
 | Backend | Accepted file names (first found wins) |
 |---|---|
@@ -58,7 +58,7 @@ uv venv --python 3.11 .cache/depth-env
 uv pip install --python .cache/depth-env/bin/python torch==2.5.1 torchvision==0.20.1 timm coremltools==8.3 \
     huggingface_hub pillow numpy "depth_pro @ git+https://github.com/apple/ml-depth-pro"
 .cache/depth-env/bin/python tools/convert_depth_models.py depth-pro \
-    --models-dir ~/Library/Application\ Support/ClayStudio/Models
+    --models-dir ~/Library/Application\ Support/Armature/Models
 ```
 
 Conversion takes 10–25 minutes and ~16 GB of memory (swap is used on a 16 GB Mac). The converter
@@ -78,14 +78,14 @@ Check any package against the contract with
 ## Use
 
 ```bash
-build/clay photo.jpg                                    # auto: the first installed backend (Depth Anything first)
-build/clay photo.jpg --depth-backend depth-pro          # a specific backend
-build/clay photo.jpg --no-monocular-depth               # none (same as --depth-backend none)
-build/clay photo.jpg --depth-backend depth-pro --depth-model ~/Downloads/DepthPro.mlpackage --no-depth-fallback
-build/clay --list-models                                # shows which depth models were found
+build/armature photo.jpg                                    # auto: the first installed backend (Depth Anything first)
+build/armature photo.jpg --depth-backend depth-pro          # a specific backend
+build/armature photo.jpg --no-monocular-depth               # none (same as --depth-backend none)
+build/armature photo.jpg --depth-backend depth-pro --depth-model ~/Downloads/DepthPro.mlpackage --no-depth-fallback
+build/armature --list-models                                # shows which depth models were found
 ```
 
-In Clay Studio, the toolbar's **Depth** menu offers *No monocular depth*, *Automatic*, and each backend
+In the app, the toolbar's **Depth** menu offers *No monocular depth*, *Automatic*, and each backend
 (marked when not installed). Switching re-runs depth in the background and re-fits, keeping your
 edits. A status line under the photo shows the backend, representation, timing and how many people
 it was used for, or why it wasn't (e.g. a missing model).
@@ -149,8 +149,8 @@ malformed `Manifest.json` instead of throwing.
 ## How depth enters the fit
 
 The fit without monocular depth always runs first. Monocular depth then refines it, and the refined
-fit is kept only if it passes every check below. Code: `Sources/ClayCore/Fitting/MonocularDepthFit.swift`
-and `Sources/ClayCore/Depth/DepthCalibration.swift`.
+fit is kept only if it passes every check below. Code: `Sources/ArmatureCore/Fitting/MonocularDepthFit.swift`
+and `Sources/ArmatureCore/Depth/DepthCalibration.swift`.
 
 1. **Samples.** The map is sampled at each person's shoulders, hips, pelvis, elbows, wrists, knees,
    ankles and nose. The nose is used rather than the head top, which hair makes unreliable. A sample
@@ -195,14 +195,14 @@ and `Sources/ClayCore/Depth/DepthCalibration.swift`.
    (`monocularDepth`), and in the Studio status line.
 
 Inference runs once per photo, in parallel with Vision's detection, and is shared by everyone in it.
-The estimate and calibration are cached on the result (`ClayResult.depth`). Re-fits (switching body
+The estimate and calibration are cached on the result (`ArmatureResult.depth`). Re-fits (switching body
 model, editing joints) reuse them without running the model again. While a joint is dragged, the live
 update uses the cached depth only if that person's last full fit accepted it. The full re-fit when the
-drag ends checks again. `CLAY_DEBUG_DEPTH=1` prints each person's samples (map, body before, body after).
+drag ends checks again. `ARMATURE_DEBUG_DEPTH=1` prints each person's samples (map, body before, body after).
 
 ### Self-test results
 
-`swift run -c release clay-selftest --model <id> --pose <pose>` builds synthetic monocular maps from
+`swift run -c release armature-selftest --model <id> --pose <pose>` builds synthetic monocular maps from
 the render's true z-buffer, with the errors real models make: unknown scale and shift, blurred
 occlusion edges, a ±4% low-frequency warp, and 1% noise. It fits them on the same detections as the
 fit without depth. Mean joint error (MPJPE), no depth → relative (Depth Anything-like) → metric
@@ -261,11 +261,11 @@ Depth Anything added 13–60 ms per photo, overlapping Vision's detection; Depth
 
 ## Tests
 
-`swift run -c release clay-depth-selftest` (no body or depth models needed, runs in CI) checks model
+`swift run -c release armature-depth-selftest` (no body or depth models needed, runs in CI) checks model
 discovery and preference order, missing, incompatible and corrupt models, source priority and
 fallback, orientation (an EXIF-rotated photo), letterbox and stretch resizing and output cropping,
 tensor decoding (strides, Float16, pixel buffers), relative normalisation, metric vs relative
 labelling (including Depth Pro's focal-length rules), depth sampling, scale estimation, and cold/warm
 timing. The Core ML path runs on tiny generated fixtures that mimic both models' I/O contracts
-(`Sources/clay-depth-selftest/Fixtures.swift`, from `tools/make_depth_test_fixtures.py`). The fitting
-guarantees are checked by `clay-selftest`, which needs a body model.
+(`Sources/armature-depth-selftest/Fixtures.swift`, from `tools/make_depth_test_fixtures.py`). The fitting
+guarantees are checked by `armature-selftest`, which needs a body model.

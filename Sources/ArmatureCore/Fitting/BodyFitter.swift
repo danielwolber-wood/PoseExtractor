@@ -211,7 +211,7 @@ public struct BodyFitter {
             let pts1 = targetPoints(x).points
             let t0 = solveTranslation(points: pts1, observed: obs2, weights: conf2, f: f, c: c)
                 // Fallback: Vision's own root position. Its camera-relative *translation* reports depth with the
-                // opposite sign to its root-relative joints (checked against ground truth in clay-selftest).
+                // opposite sign to its root-relative joints (checked against ground truth in armature-selftest).
                 ?? (SIMD3(obs3[0].x, obs3[0].y, abs(obs3[0].z)) - pts1[0])
             x[transOffset..<transOffset + 3] = ArraySlice(t0.scalars)
         }
@@ -251,7 +251,7 @@ public struct BodyFitter {
                                 personPx: personPx, prior: { x, r in
                                     // A weak pull toward Vision's 3D: the silhouette can't see depth, so without
                                     // it the trunk and hips drift; stage 2's stronger 8 cm version over-constrains
-                                    // (Vision's own 3D is ~18 cm off). Tuned on clay-selftest.
+                                    // (Vision's own 3D is ~18 cm off). Tuned on armature-selftest.
                                     let pts = targetPoints(x).points
                                     residuals3D(pts, x, sigma: 0.25, into: &r)
                                     priorResiduals(x, into: &r)

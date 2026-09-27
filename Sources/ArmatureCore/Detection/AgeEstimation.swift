@@ -75,13 +75,13 @@ public final class AgeEstimator: @unchecked Sendable {
                                                           id: info.id), configuration: config)
     }
 
-    /// Compiles the .mlpackage once and caches the result (~/Library/Caches/ClayPose/age), keyed by the
+    /// Compiles the .mlpackage once and caches the result (~/Library/Caches/Armature/age), keyed by the
     /// package's modification date so re-converted models are picked up.
     private static func compiled(_ package: URL, id: String) throws -> URL {
         let stamp = (try? FileManager.default.attributesOfItem(atPath: package.appendingPathComponent("Manifest.json").path)[.modificationDate] as? Date)
             .map { Int($0.timeIntervalSince1970) } ?? 0
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ClayPose/age", isDirectory: true)
+            .appendingPathComponent("Armature/age", isDirectory: true)
         let cached = cacheDir.appendingPathComponent("\(id)-\(stamp).mlmodelc")
         if FileManager.default.fileExists(atPath: cached.path) { return cached }
         let tmp = try MLModel.compileModel(at: package)

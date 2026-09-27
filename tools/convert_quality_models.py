@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline PyIQA 0.1.14.1 -> native Clay quality assets. No Python is used at runtime.
+"""Offline PyIQA 0.1.14.1 -> native Armature quality assets. No Python is used at runtime.
 
 Setup: uv venv --python 3.11 .cache/iqa-env
 uv pip install --python .cache/iqa-env/bin/python -r tools/quality-requirements.txt

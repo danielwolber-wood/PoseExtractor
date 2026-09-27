@@ -6,5 +6,5 @@ repository does not ship a sample image.
 After converting models and building the app, run from the repository root:
 
 ```bash
-build/clay examples/photos/your-photo.jpg -o out/example
+build/armature examples/photos/your-photo.jpg -o out/example
 ```

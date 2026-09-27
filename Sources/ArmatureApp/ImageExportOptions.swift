@@ -1,5 +1,5 @@
 import AppKit
-import ClayCore
+import ArmatureCore
 import UniformTypeIdentifiers
 
 /// Accessory controls for the "Export Image" save panel: size, format and background.

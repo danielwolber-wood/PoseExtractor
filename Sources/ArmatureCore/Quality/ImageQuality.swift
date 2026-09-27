@@ -83,10 +83,10 @@ public final class ImageQualityAnalyzer: @unchecked Sendable {
         let output: String
     }
     public static func defaultModelsDirectory() -> URL {
-        if let env = ProcessInfo.processInfo.environment["CLAY_MODELS"] { return URL(fileURLWithPath: env) }
+        if let env = ModelLocations.environmentDirectory() { return env }
         let candidates = [Bundle.main.resourceURL?.appendingPathComponent("Models"),
-                          URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Models"),
-                          FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("ClayStudio/Models")].compactMap { $0 }
+                          URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Models")].compactMap { $0 }
+                          + ModelLocations.applicationSupportDirectories()
         return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("quality").path) }
             ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Models")
     }
@@ -152,7 +152,7 @@ public final class ImageQualityAnalyzer: @unchecked Sendable {
         let manifest = try Data(contentsOf: package.appendingPathComponent("Manifest.json"))
         let stamp = try Data(contentsOf: root.appendingPathComponent("quality.json"))
         let digest = SHA256.hash(data: manifest + stamp).map { String(format: "%02x", $0) }.joined()
-        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ClayPose/quality")
+        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Armature/quality")
         let key = "\(spec.id)-\(digest)"
         let cached = cacheRoot.appendingPathComponent(key + ".mlmodelc")
         if !FileManager.default.fileExists(atPath: cached.path) {

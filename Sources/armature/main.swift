@@ -1,10 +1,10 @@
-import ClayCore
+import ArmatureCore
 import Foundation
 
 let usage = """
-usage: clay <image> [options]
-       clay quality <image-or-folder> [-o scores.csv|scores.json] [--models Models]
-                    [--metrics musiq,hyperiqa,nima,brisque,clipiqa,niqe,arniqa,liqe]
+usage: armature <image> [options]
+       armature quality <image-or-folder> [-o scores.csv|scores.json] [--models Models]
+                        [--metrics musiq,hyperiqa,nima,brisque,clipiqa,niqe,arniqa,liqe]
 
 Detects people in <image>, fits SMPL bodies and writes clay renders + meshes.
 
@@ -23,7 +23,7 @@ options:
       --size <px>        long edge of the rendered images (default: 2048)
       --transparent      render images without the photo/backdrop (PNG with alpha, shadows kept)
       --focal-mm <mm>    35 mm-equivalent lens focal length (default: EXIF, else 50)
-      --models <dir>     converted model directory (default: ./Models or $CLAY_MODELS)
+      --models <dir>     converted model directory (default: ./Models or $ARMATURE_MODELS)
       --no-silhouette    skip fitting body shape to the person segmentation mask
       --depth-backend <b> monocular depth when the photo has no LiDAR/TrueDepth depth:
                          none | auto | depth-anything-v2-small | depth-pro (default: auto — the first
@@ -46,7 +46,7 @@ if args.first == "quality" {
     catch { fail(error.localizedDescription) }
 }
 if args.contains("--list-models") {
-    guard let dir = ClayPipeline.defaultModelsDirectory() else { print("no converted models found"); exit(1) }
+    guard let dir = ArmaturePipeline.defaultModelsDirectory() else { print("no converted models found"); exit(1) }
     print("body models:")
     for m in BodyModelInfo.available(in: dir) {
         print("  \(m.id.padding(toLength: 16, withPad: " ", startingAt: 0)) \(m.displayName)  [\(m.licence)]")
@@ -56,7 +56,7 @@ if args.contains("--list-models") {
         print("  \(m.id.padding(toLength: 16, withPad: " ", startingAt: 0)) \(m.displayName)  [\(m.licence)]")
     }
     print("depth models:")
-    let depthModels = ClayPipeline(modelsDirectory: dir).installedDepthModels()
+    let depthModels = ArmaturePipeline(modelsDirectory: dir).installedDepthModels()
     for b in MonocularDepthBackend.allCases {
         let where_ = depthModels[b].map { $0.modelURL.path } ?? "not installed (Models/depth/\(b.rawValue)/)"
         print("  \(b.rawValue.padding(toLength: 24, withPad: " ", startingAt: 0)) \(b.displayName): \(where_)")
@@ -66,8 +66,8 @@ if args.contains("--list-models") {
 
 var inputPath: String?
 var outDir: String?
-var bodyModel = ClayPipeline.defaultModelID
-var ages = ClayPipeline.AgeInput.none
+var bodyModel = ArmaturePipeline.defaultModelID
+var ages = ArmaturePipeline.AgeInput.none
 var ageModel: String??  // nil: default; .some(nil): none
 var style = ClayStyle()
 var modelsPath: String?
@@ -146,7 +146,7 @@ while !args.isEmpty {
 
 guard let inputPath else { fail("no input image") }
 let inputURL = URL(fileURLWithPath: inputPath)
-let modelsURL = modelsPath.map { URL(fileURLWithPath: $0) } ?? ClayPipeline.defaultModelsDirectory()
+let modelsURL = modelsPath.map { URL(fileURLWithPath: $0) } ?? ArmaturePipeline.defaultModelsDirectory()
 guard let modelsURL else {
     fail("converted SMPL models not found. Run: uv run --with numpy --with scipy tools/convert_models.py")
 }
@@ -156,7 +156,7 @@ do {
     try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
     let t0 = Date()
     let image = try LoadedImage(url: inputURL, focalLength35mm: focalMM)
-    let pipeline = ClayPipeline(modelsDirectory: modelsURL)
+    let pipeline = ArmaturePipeline(modelsDirectory: modelsURL)
     pipeline.useSilhouette = useSilhouette
     pipeline.ageModel = ageModel ?? pipeline.availableAgeModels.first?.id
     if let id = pipeline.ageModel, !pipeline.availableAgeModels.contains(where: { $0.id == id }) {
@@ -243,10 +243,10 @@ do {
     if result.bodies.isEmpty { fail("no people detected") }
 
     for (i, mesh) in result.meshes.enumerated() {
-        try ClayExport.obj(vertices: mesh, faces: result.faces)
+        try ArmatureExport.obj(vertices: mesh, faces: result.faces)
             .write(to: out.appendingPathComponent("person_\(i).obj"), atomically: true, encoding: .utf8)
     }
-    try ClayExport.parametersJSON(result, pipeline: pipeline).write(to: out.appendingPathComponent("body_params.json"))
+    try ArmatureExport.parametersJSON(result, pipeline: pipeline).write(to: out.appendingPathComponent("body_params.json"))
 
     let t1 = Date()
     let scene = result.makeScene(style: style)
@@ -254,7 +254,7 @@ do {
         guard let img = scene.render(view, size: scene.defaultSize(view, maxDimension: renderSize), background: background) else {
             fail("rendering failed")
         }
-        try ClayExport.writePNG(img, to: out.appendingPathComponent("clay_\(view.rawValue).png"))
+        try ArmatureExport.writePNG(img, to: out.appendingPathComponent("clay_\(view.rawValue).png"))
     }
     if writeUSDZ && !scene.exportUSDZ(to: out.appendingPathComponent("clay.usdz")) {
         print("warning: USDZ export failed")

@@ -1,4 +1,4 @@
-"""Installs the optional monocular depth models for Clay Pose (offline; the app never runs Python).
+"""Installs the optional monocular depth models for Armature (offline; the app never runs Python).
 
     python tools/convert_depth_models.py depth-anything-v2-small
     python tools/convert_depth_models.py depth-pro [--precision float16|float32] [--image photo.jpg]
@@ -31,9 +31,9 @@ check
     Prints a package's inputs/outputs and whether they match the backend contract.
 
 --models-dir DIR installs somewhere other than ./Models, e.g. the app's Application Support folder,
-which ClayStudio searches but scripts/make_app.sh does not bundle — the right place for Depth Pro
+which the app searches but scripts/make_app.sh does not bundle — the right place for Depth Pro
 (1.9 GB, research-only weights licence):
-    --models-dir ~/Library/Application\ Support/ClayStudio/Models
+    --models-dir ~/Library/Application\ Support/Armature/Models
 """
 
 import argparse
@@ -167,7 +167,7 @@ def install_depth_pro(args):
                              scale=2 / 255.0, bias=[-1.0, -1.0, -1.0])],
         outputs=[ct.TensorType(name="canonical_inverse_depth"), ct.TensorType(name="fov_deg")])
     print(f"converted in {time.time() - t0:.0f} s")
-    mlmodel.short_description = "Apple Depth Pro (canonical inverse depth + field of view), converted by Clay Pose"
+    mlmodel.short_description = "Apple Depth Pro (canonical inverse depth + field of view), converted by Armature"
     mlmodel.user_defined_metadata["clay.outputKind"] = "canonicalInverseDepth"
     mlmodel.user_defined_metadata["clay.source"] = f"{PRO_REPO}/{PRO_CKPT}"
 

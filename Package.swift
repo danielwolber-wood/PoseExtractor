@@ -2,27 +2,26 @@
 import PackageDescription
 
 let package = Package(
-    name: "ClayPose",
+    name: "Armature",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "ClayCore", targets: ["ClayCore"]),
-        .executable(name: "clay", targets: ["clay"]),
-        .executable(name: "ClayStudio", targets: ["ClayStudio"]),
+        .library(name: "ArmatureCore", targets: ["ArmatureCore"]),
+        .executable(name: "armature", targets: ["armature"]),
+        .executable(name: "ArmatureApp", targets: ["ArmatureApp"]),
     ],
     targets: [
         .target(
-            name: "ClayCore",
+            name: "ArmatureCore",
             linkerSettings: [
                 .linkedFramework("Accelerate"),
                 .linkedFramework("Vision"),
                 .linkedFramework("SceneKit"),
             ]
         ),
-        .executableTarget(name: "clay", dependencies: ["ClayCore"]),
-        .executableTarget(name: "ClayStudio", dependencies: ["ClayCore"]),
-        .executableTarget(name: "clay-selftest", dependencies: ["ClayCore"]),
-        .executableTarget(name: "clay-icon", dependencies: ["ClayCore"]),
-        .executableTarget(name: "clay-quality-selftest", dependencies: ["ClayCore"]),
-        .executableTarget(name: "clay-depth-selftest", dependencies: ["ClayCore"]),
+        .executableTarget(name: "armature", dependencies: ["ArmatureCore"]),
+        .executableTarget(name: "ArmatureApp", dependencies: ["ArmatureCore"]),
+        .executableTarget(name: "armature-selftest", dependencies: ["ArmatureCore"]),
+        .executableTarget(name: "armature-quality-selftest", dependencies: ["ArmatureCore"]),
+        .executableTarget(name: "armature-depth-selftest", dependencies: ["ArmatureCore"]),
     ]
 )

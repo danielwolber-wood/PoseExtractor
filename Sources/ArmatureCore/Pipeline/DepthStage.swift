@@ -1,7 +1,7 @@
 import Foundation
 
 /// The depth side of one pipeline run: where depth came from, the (cached) monocular estimate, its
-/// calibration and any warnings. Kept on `ClayResult`, so re-fits reuse it instead of re-running a model.
+/// calibration and any warnings. Kept on `ArmatureResult`, so re-fits reuse it instead of re-running a model.
 public struct DepthReport: @unchecked Sendable {
     public var requested: MonocularDepthMode
     public var decision: DepthSourceDecision
@@ -98,7 +98,7 @@ public struct DepthSummary: Codable, Sendable {
     }
 }
 
-extension ClayPipeline {
+extension ArmaturePipeline {
     /// Depth backends whose model files are present (nothing is loaded).
     public func installedDepthModels() -> [MonocularDepthBackend: DepthModelLocation] {
         let roots = DepthModelLocator.searchRoots(modelsDirectory: modelsDirectory)
@@ -209,7 +209,7 @@ extension ClayPipeline {
     }
 
     /// The cached estimate and calibration as depth evidence for one (possibly edited) person.
-    func cachedDepthCue(_ result: ClayResult, index: Int, person: DetectedPerson, fitter: BodyFitter, body: FittedBody)
+    func cachedDepthCue(_ result: ArmatureResult, index: Int, person: DetectedPerson, fitter: BodyFitter, body: FittedBody)
         -> (cue: MonocularDepthCue?, skipped: MonocularDepthFitReport?) {
         guard let depth = result.depth, case .monocular(let backend, _) = depth.decision, let estimate = depth.estimate,
               let calibration = depth.calibration else { return (nil, nil) }

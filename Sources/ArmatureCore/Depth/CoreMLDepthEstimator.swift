@@ -51,7 +51,7 @@ public final class CoreMLDepthEstimator: MonocularDepthEstimating, @unchecked Se
     }
 
     /// Compiled models load directly; packages are compiled once and cached in
-    /// ~/Library/Caches/ClayPose/depth, keyed by path, size and modification date.
+    /// ~/Library/Caches/Armature/depth, keyed by path, size and modification date.
     static func compiled(_ location: DepthModelLocation) throws -> URL {
         let url = location.modelURL
         if url.pathExtension.lowercased() == "mlmodelc" { return url }
@@ -60,7 +60,7 @@ public final class CoreMLDepthEstimator: MonocularDepthEstimating, @unchecked Se
         let attrs = try? fm.attributesOfItem(atPath: stampFile.path)
         let stamp = "\(url.standardizedFileURL.path)|\((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(attrs?[.size] ?? 0)"
         let key = SHA256.hash(data: Data(stamp.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-        let cacheDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ClayPose/depth", isDirectory: true)
+        let cacheDir = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("Armature/depth", isDirectory: true)
         let cached = cacheDir.appendingPathComponent("\(location.backend.rawValue)-\(key).mlmodelc")
         if fm.fileExists(atPath: cached.path) { return cached }
         try validatePackage(location)

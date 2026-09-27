@@ -3,7 +3,7 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-public struct ClayResult {
+public struct ArmatureResult {
     public let image: LoadedImage
     public internal(set) var people: [DetectedPerson]
     public internal(set) var bodies: [FittedBody]
@@ -36,7 +36,7 @@ public struct ClayResult {
 }
 
 /// Image → people → fitted SMPL bodies → meshes.
-public final class ClayPipeline: @unchecked Sendable {
+public final class ArmaturePipeline: @unchecked Sendable {
     public let modelsDirectory: URL
     private var models: [String: BodyModel] = [:]
     private let lock = NSLock()
@@ -86,7 +86,7 @@ public final class ClayPipeline: @unchecked Sendable {
     /// Looks for converted models next to the working directory, the executable, or in Application Support.
     public static func defaultModelsDirectory() -> URL? {
         var candidates: [URL] = []
-        if let env = ProcessInfo.processInfo.environment["CLAY_MODELS"] { candidates.append(URL(fileURLWithPath: env)) }
+        if let env = ModelLocations.environmentDirectory() { candidates.append(env) }
         if let resources = Bundle.main.resourceURL { candidates.append(resources.appendingPathComponent("Models")) }
         candidates.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Models"))
         var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
@@ -94,9 +94,7 @@ public final class ClayPipeline: @unchecked Sendable {
             candidates.append(dir.appendingPathComponent("Models"))
             dir.deleteLastPathComponent()
         }
-        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            candidates.append(support.appendingPathComponent("ClayStudio/Models"))
-        }
+        candidates += ModelLocations.applicationSupportDirectories()
         return candidates.first {
             !BodyModelInfo.available(in: $0).isEmpty
         }
@@ -126,8 +124,8 @@ public final class ClayPipeline: @unchecked Sendable {
         case perPerson([Int: Double])
     }
 
-    public func run(image: LoadedImage, model modelID: String = ClayPipeline.defaultModelID,
-                    ages: AgeInput = .none) throws -> ClayResult {
+    public func run(image: LoadedImage, model modelID: String = ArmaturePipeline.defaultModelID,
+                    ages: AgeInput = .none) throws -> ArmatureResult {
         let t0 = Date()
         // Monocular depth runs once per photo, alongside Vision (both on the Neural Engine / GPU).
         let depthBox = DepthBox()
@@ -162,8 +160,8 @@ public final class ClayPipeline: @unchecked Sendable {
     /// Re-fits one person after their detection was edited. Fast enough (~10 ms) to call while dragging.
     /// Pass `silhouette: false` for interactive updates: skips the silhouette stage and warm-starts
     /// from the current fit (a few ms, even for Anny). The full re-fit runs when the edit ends.
-    public func refit(_ result: ClayResult, person index: Int, with person: DetectedPerson, model modelID: String,
-                      silhouette: Bool = true) throws -> ClayResult {
+    public func refit(_ result: ArmatureResult, person index: Int, with person: DetectedPerson, model modelID: String,
+                      silhouette: Bool = true) throws -> ArmatureResult {
         let body3D = try model(modelID)
         var out = result
         let fitter = BodyFitter(model: body3D)
@@ -203,10 +201,10 @@ public final class ClayPipeline: @unchecked Sendable {
     }
 
     /// Fits bodies to existing detections (used for re-fitting with a different body model, keeping edits).
-    /// - Parameter depth: a previous result's depth (`ClayResult.depth`), so a re-fit reuses its monocular
+    /// - Parameter depth: a previous result's depth (`ArmatureResult.depth`), so a re-fit reuses its monocular
     ///   estimate instead of running the model again. Calibration is redone against the new fits.
     public func fit(people: [DetectedPerson], image: LoadedImage, model modelID: String,
-                    horizonAngle: Double? = nil, depth: DepthReport? = nil) throws -> ClayResult {
+                    horizonAngle: Double? = nil, depth: DepthReport? = nil) throws -> ArmatureResult {
         var timings: [(String, TimeInterval)] = []
         func timed<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
             let t0 = Date()
@@ -231,7 +229,7 @@ public final class ClayPipeline: @unchecked Sendable {
         let meshes = timed("build meshes") {
             bodies.map { body3D.vertices(pose: $0.pose, betas: $0.betas, translation: $0.translation) }
         }
-        return ClayResult(image: image, people: people, bodies: bodies, meshes: meshes, faces: body3D.faces,
+        return ArmatureResult(image: image, people: people, bodies: bodies, meshes: meshes, faces: body3D.faces,
                           timings: timings, horizonAngle: horizonAngle, depth: depth)
     }
 }
@@ -243,7 +241,7 @@ private final class DepthBox: @unchecked Sendable {
 
 // MARK: - Export
 
-public enum ClayExport {
+public enum ArmatureExport {
     /// Wavefront OBJ in a y-up, right-handed frame (camera at origin looking down -z).
     public static func obj(vertices: [SIMD3<Float>], faces: [UInt32]) -> String {
         var s = "# SMPL clay figure (y-up, metres)\n"
@@ -256,7 +254,7 @@ public enum ClayExport {
     }
 
     /// - Parameter pipeline: when given, adds each body's phenotype read-out (Anny: apparent age etc.).
-    public static func parametersJSON(_ result: ClayResult, pipeline: ClayPipeline? = nil) throws -> Data {
+    public static func parametersJSON(_ result: ArmatureResult, pipeline: ArmaturePipeline? = nil) throws -> Data {
         struct Person: Encodable {
             let index: Int
             let model: String

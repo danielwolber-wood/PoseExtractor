@@ -30,9 +30,9 @@ public enum DepthModelLocator {
         return stems.flatMap { ["\($0).mlmodelc", "\($0).mlpackage", "\($0).mlmodel"] }
     }
 
-    /// Directories searched, in priority order, de-duplicated: `CLAY_MODELS`, the pipeline's models
+    /// Directories searched, in priority order, de-duplicated: `ARMATURE_MODELS` (or `CLAY_MODELS`), the pipeline's models
     /// directory, the app bundle, ./Models, Models next to (or above) the executable, and
-    /// ~/Library/Application Support/ClayStudio/Models — where large optional models can live
+    /// ~/Library/Application Support/Armature/Models (then ClayStudio/Models) — where large optional models can live
     /// without being bundled into the app.
     public static func searchRoots(modelsDirectory: URL?,
                                    environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -43,7 +43,7 @@ public enum DepthModelLocator {
                                                                                        in: .userDomainMask).first)
         -> [URL] {
         var roots: [URL] = []
-        if let env = environment["CLAY_MODELS"], !env.isEmpty { roots.append(URL(fileURLWithPath: env)) }
+        if let env = ModelLocations.environmentDirectory(environment) { roots.append(env) }
         if let modelsDirectory { roots.append(modelsDirectory) }
         if let bundleResources { roots.append(bundleResources.appendingPathComponent("Models")) }
         roots.append(currentDirectory.appendingPathComponent("Models"))
@@ -54,7 +54,7 @@ public enum DepthModelLocator {
                 dir.deleteLastPathComponent()
             }
         }
-        if let applicationSupport { roots.append(applicationSupport.appendingPathComponent("ClayStudio/Models")) }
+        roots += ModelLocations.applicationSupportDirectories(applicationSupport)
         var seen = Set<String>()
         return roots.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
@@ -81,7 +81,7 @@ public enum DepthModelLocator {
         return nil
     }
 
-    /// A model given explicitly (e.g. `clay --depth-model path`): the file itself, or a directory
+    /// A model given explicitly (e.g. `armature --depth-model path`): the file itself, or a directory
     /// laid out like a backend directory.
     public static func explicit(_ backend: MonocularDepthBackend, url: URL) -> DepthModelLocation? {
         var isDir: ObjCBool = false

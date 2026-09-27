@@ -331,7 +331,7 @@ extension BodyFitter {
 
         report.reason = rejection(baseline: baseline, candidate: candidate, before: before, after: after, person: person,
                                   image: image, cue: cue) ?? "accepted"
-        if ProcessInfo.processInfo.environment["CLAY_DEBUG_DEPTH"] != nil {
+        if ProcessInfo.processInfo.environment["ARMATURE_DEBUG_DEPTH"] != nil {
             // Debug aid: each sample's depth relative to the torso — map, body before, body after (cm).
             let refBefore = cue.bodyReference(before, tz: 0), refAfter = cue.bodyReference(after, tz: 0)
             print(String(format: "depth samples (reference %.2f m, σ %.0f cm): %@", cue.referenceDepth, cue.sigmaRelative * 100,

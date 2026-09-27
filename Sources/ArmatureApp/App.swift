@@ -1,11 +1,11 @@
 import AppKit
-import ClayCore
+import ArmatureCore
 import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct ClayStudioApp: App {
+struct ArmatureApp: App {
     init() {
         // Running from `swift run` there is no bundle; make sure we still get a Dock icon and focus.
         NSApplication.shared.setActivationPolicy(.regular)
@@ -13,7 +13,7 @@ struct ClayStudioApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Clay Studio") {
+        WindowGroup("Armature") {
             ContentView()
                 .frame(minWidth: 1000, minHeight: 620)
         }
@@ -157,7 +157,7 @@ struct MissingModelsView: View {
                 .textSelection(.enabled)
                 .padding(8)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-            Text("Clay Studio looks in ./Models, next to the app, in $CLAY_MODELS, and in ~/Library/Application Support/ClayStudio/Models.")
+            Text("Armature looks in ./Models, next to the app, in $ARMATURE_MODELS, and in ~/Library/Application Support/Armature/Models.")
                 .foregroundStyle(.secondary)
         }
         .padding(40)

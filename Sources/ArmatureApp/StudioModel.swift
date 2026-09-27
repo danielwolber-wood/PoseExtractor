@@ -1,5 +1,5 @@
 import AppKit
-import ClayCore
+import ArmatureCore
 import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -18,10 +18,10 @@ final class StudioModel: ObservableObject {
     @Published var sourceImage: NSImage?
     /// Detections as edited by the user (drives the skeleton overlay).
     @Published private(set) var people: [DetectedPerson] = []
-    @Published private(set) var result: ClayResult?
+    @Published private(set) var result: ArmatureResult?
     @Published private(set) var clayScene: ClayScene?
     /// Id of the body model to fit (see `availableModels`). Switching re-fits the current detections.
-    @Published var bodyModel = ClayPipeline.defaultModelID { didSet { if bodyModel != oldValue { refitAll() } } }
+    @Published var bodyModel = ArmaturePipeline.defaultModelID { didSet { if bodyModel != oldValue { refitAll() } } }
     /// Converted body models found on disk.
     var availableModels: [BodyModelInfo] { pipeline?.availableModels ?? [] }
 
@@ -56,9 +56,9 @@ final class StudioModel: ObservableObject {
     @Published private(set) var hovered: JointRef?
     @Published private(set) var dragging: JointRef?
 
-    let modelsDirectory = ClayPipeline.defaultModelsDirectory()
-    private lazy var pipeline: ClayPipeline? = modelsDirectory.map { dir in
-        let p = ClayPipeline(modelsDirectory: dir)
+    let modelsDirectory = ArmaturePipeline.defaultModelsDirectory()
+    private lazy var pipeline: ArmaturePipeline? = modelsDirectory.map { dir in
+        let p = ArmaturePipeline(modelsDirectory: dir)
         p.ageModel = ageModel == Self.noAgeModel ? nil : ageModel
         p.monocularDepthMode = MonocularDepthMode(argument: depthMode) ?? .automatic
         return p
@@ -93,7 +93,7 @@ final class StudioModel: ObservableObject {
     /// Age estimator id, or `noAgeModel`. Defaults to the first installed (MiVOLO). Switching re-estimates
     /// everyone's age and re-fits (Anny's shape is conditioned on age).
     @Published var ageModel: String = {
-        ClayPipeline.defaultModelsDirectory().flatMap { AgeModelInfo.available(in: $0).first?.id } ?? "none"
+        ArmaturePipeline.defaultModelsDirectory().flatMap { AgeModelInfo.available(in: $0).first?.id } ?? "none"
     }() {
         didSet {
             guard ageModel != oldValue, let pipeline, let result else { return }
@@ -212,7 +212,7 @@ final class StudioModel: ObservableObject {
         }
     }
 
-    private func install(_ result: ClayResult) {
+    private func install(_ result: ArmatureResult) {
         self.result = result
         people = result.people
         maskOverlays = result.people.enumerated().map { i, p in
@@ -381,7 +381,7 @@ final class StudioModel: ObservableObject {
             return
         }
         do {
-            try ClayExport.writeImage(image, to: url, type: options.format)
+            try ArmatureExport.writeImage(image, to: url, type: options.format)
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -408,10 +408,10 @@ final class StudioModel: ObservableObject {
         guard panel.runModal() == .OK, let dir = panel.url else { return }
         do {
             for (i, mesh) in result.meshes.enumerated() {
-                try ClayExport.obj(vertices: mesh, faces: result.faces)
+                try ArmatureExport.obj(vertices: mesh, faces: result.faces)
                     .write(to: dir.appendingPathComponent("person_\(i).obj"), atomically: true, encoding: .utf8)
             }
-            try ClayExport.parametersJSON(result, pipeline: pipeline).write(to: dir.appendingPathComponent("body_params.json"))
+            try ArmatureExport.parametersJSON(result, pipeline: pipeline).write(to: dir.appendingPathComponent("body_params.json"))
         } catch {
             phase = .failed(error.localizedDescription)
         }

@@ -4,7 +4,7 @@
 Each model is written to Models/age/<id>/ as:
     model.mlpackage   Core ML model (the app compiles and caches it on first use)
     age.json          how to feed it: which crops, size, colour order, normalisation, and how to read
-                      the output (see Sources/ClayCore/Detection/AgeEstimation.swift)
+                      the output (see Sources/ArmatureCore/Detection/AgeEstimation.swift)
 
 Estimators:
   mivolo   MiVOLO v2 (Kuprashevich & Tolstykh, 2023-25) -- Apache-2.0 code and weights. Face + body crops,

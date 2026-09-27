@@ -21,13 +21,13 @@ from torchvision.transforms.functional import to_tensor
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('fixtures', type=Path)
-    p.add_argument('--clay', type=Path, default=ROOT / '.build/release/clay')
+    p.add_argument('--armature', type=Path, default=ROOT / '.build/release/armature')
     p.add_argument('--metrics', nargs='+', default=IDS)
     args = p.parse_args()
     files = sorted(args.fixtures.glob('*.png'))
     if not files: raise RuntimeError('No PNG fixtures')
     output = args.fixtures / 'native.json'
-    subprocess.run([str(args.clay), 'quality', str(args.fixtures), '--metrics', ','.join(args.metrics),
+    subprocess.run([str(args.armature), 'quality', str(args.fixtures), '--metrics', ','.join(args.metrics),
                     '--models', str(ROOT/'Models'), '-o', str(output)], check=True)
     native = {r['fileName']: {s['metric']: s for s in r['scores']} for r in json.loads(output.read_text())}
     results, failures = [], []

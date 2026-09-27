@@ -1,5 +1,5 @@
 import AVFoundation
-import ClayCore
+import ArmatureCore
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -7,7 +7,7 @@ import simd
 import UniformTypeIdentifiers
 
 // Round-trip regression test for any body model:
-//   clay-selftest [--model <id>] [--pose raise|reach|walk] [--age <years>] [--out <dir>]
+//   armature-selftest [--model <id>] [--pose raise|reach|walk] [--age <years>] [--out <dir>]
 // --age (models with an age-aware shape space, i.e. Anny): the truth body is that age's average shape,
 // and the fit is compared with and without being told the age.
 // Poses the model in a known asymmetric pose with a heavier-than-average build, renders it as clay,
@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
 // Exits non-zero if a monocular-depth guarantee fails (embedded depth priority, no harm from bad depth,
 // edited joints kept).
 
-var modelID = ClayPipeline.defaultModelID
+var modelID = ArmaturePipeline.defaultModelID
 var poseName = "raise"
 var truthAge: Double?
 var outDir = URL(fileURLWithPath: "out/selftest")
@@ -28,11 +28,11 @@ while !argv.isEmpty {
     if a == "--age", !argv.isEmpty { truthAge = Double(argv.removeFirst()) }
     if a == "--out", !argv.isEmpty { outDir = URL(fileURLWithPath: argv.removeFirst()) }
 }
-guard let modelsURL = ClayPipeline.defaultModelsDirectory() else { print("models not found"); exit(1) }
+guard let modelsURL = ArmaturePipeline.defaultModelsDirectory() else { print("models not found"); exit(1) }
 outDir.appendPathComponent(modelID + (poseName == "raise" ? "" : "_" + poseName) + (truthAge.map { "_age\(Int($0))" } ?? ""))
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
-let pipeline = ClayPipeline(modelsDirectory: modelsURL)
+let pipeline = ArmaturePipeline(modelsDirectory: modelsURL)
 // Installed depth models must not change the reference numbers; monocular depth is tested explicitly below.
 pipeline.monocularDepthMode = .disabled
 let model = try pipeline.model(modelID)
@@ -103,7 +103,7 @@ let backdrop = try LoadedImage(cgImage: ctx.makeImage()!)
 var style = ClayStyle(); style.palette = .terracotta
 let gtScene = ClayScene(bodies: [truth], meshes: [mesh], faces: model.faces, image: backdrop, style: style)
 guard let render = gtScene.render(.photo) else { print("render failed"); exit(1) }
-try ClayExport.writePNG(render, to: outDir.appendingPathComponent("input_synthetic.png"))
+try ArmatureExport.writePNG(render, to: outDir.appendingPathComponent("input_synthetic.png"))
 
 // MARK: Recover
 
@@ -296,7 +296,7 @@ print("monocular depth (synthetic maps, same detections):")
 let baseDistance = model.kinematics(pose: fit.pose, betas: fit.betas).joints[joint("pelvis")].z + fit.translation.z
 print(String(format: "  %-40@ MPJPE %.1f cm, pelvis %.2f m (truth %.2f), height %.2f m", "no depth" as NSString,
              mpjpe(fit) * 100, baseDistance, trueZ, model.height(betas: fit.betas)))
-var monoResults: [String: ClayResult] = [:]
+var monoResults: [String: ArmatureResult] = [:]
 for (label, backend, representation, values) in monoCases {
     let map = DepthMap(width: dw, height: dh, values: values, representation: representation)
     pipeline.depthEstimatorOverride = SyntheticDepthEstimator(backend: backend) { _ in MonocularDepthEstimate(backend: backend, map: map) }
@@ -368,6 +368,6 @@ expect(wristError(monoEdit) <= wristError(noDepthEdit) + 2, "monocular depth kee
 expect(wristError(monoLive) <= wristError(live) + 2, "monocular depth keeps the user-edited joint (live update)")
 
 let scene = result.makeScene(style: ClayStyle())
-if let img = scene.render(.photo) { try ClayExport.writePNG(img, to: outDir.appendingPathComponent("recovered_photo.png")) }
-if let img = scene.render(.studio) { try ClayExport.writePNG(img, to: outDir.appendingPathComponent("recovered_studio.png")) }
+if let img = scene.render(.photo) { try ArmatureExport.writePNG(img, to: outDir.appendingPathComponent("recovered_photo.png")) }
+if let img = scene.render(.studio) { try ArmatureExport.writePNG(img, to: outDir.appendingPathComponent("recovered_studio.png")) }
 if depthChecksFailed { print("monocular depth checks FAILED"); exit(1) }

@@ -1,4 +1,4 @@
-import ClayCore
+import ArmatureCore
 import Foundation
 
 /// Independent command: no body models, pose detection, scene, or renderer required.
@@ -26,7 +26,7 @@ func runQualityCommand(_ arguments: [String]) throws {
             path = arg
         }
     }
-    guard let path else { throw QualityError.invalid("Usage: clay quality <image-or-folder> [-o scores.csv|scores.json] [--models Models] [--metrics nima,brisque,...]") }
+    guard let path else { throw QualityError.invalid("Usage: armature quality <image-or-folder> [-o scores.csv|scores.json] [--models Models] [--metrics nima,brisque,...]") }
     let root = URL(fileURLWithPath: path)
     let destination = URL(fileURLWithPath: output)
     guard ["csv","json"].contains(destination.pathExtension.lowercased()) else { throw QualityError.invalid("Output must be .csv or .json") }
