@@ -49,7 +49,7 @@ See [data/README.md](data/README.md) for input placement and migration notes.
 | **Anny** | 104 | All ages (infants to elders), articulated fingers | Apache-2.0, built on CC0 MakeHuman assets | Installed by the converter from PyPI (`anny`) |
 
 - **Canonical format:** the converter turns each model into the same frame (y up, facing +z, metres) as a linear model.
-- **Rig description:** each model also gets a rig description saying which joint is which, where each keypoint lives on the body, joint stiffness and hinge limits. The Swift fitter reads only that, so it has no model-specific code.
+- **Rig description:** each model also gets a rig description saying which joint is which, where each keypoint lives on the body, joint stiffness, hinge and range-of-motion limits, and capsules for self-collision. The Swift fitter reads only that, so it has no model-specific code. Models converted before the limits existed still load, without them; re-run the converter to add them.
 - **SMPL-X specifics:** nose, eyes and mouth come from SMPL-X's own landmark embedding, which is exact. Transferring them from SMPL put them 2–3.5 cm too low. Its relaxed mean hand is the default pose, so unobserved hands curl naturally instead of lying flat.
 - **Anny's shape space:** Anny's phenotype space (age, gender, weight, muscle, height, proportions) is non-linear. It's linearised by PCA over 2,000 bodies sampled from Anny's WHO-calibrated shape distribution. 16 components capture essentially all of the variation, and a linear read-out recovers apparent age (R² 0.92), shown in the app and the JSON.
 

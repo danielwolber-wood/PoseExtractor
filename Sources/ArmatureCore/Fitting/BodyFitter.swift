@@ -21,6 +21,9 @@ public struct FittedBody: Codable, Sendable {
     /// silhouette stage (nil when no mask was available or the stage was skipped).
     public var silhouetteBefore: SilhouetteOverlap?
     public var silhouette: SilhouetteOverlap?
+    /// Range-of-motion and self-collision problems left in the fitted pose, and any limbs whose depth was
+    /// flipped relative to Vision's estimate (nil for bodies not produced by the fitter).
+    public var plausibility: PlausibilityReport?
 
     public init(model: String, pose: [SIMD3<Double>], betas: [Double], translation: SIMD3<Double>, rms3D: Double = 0, rms2D: Double = 0) {
         self.model = model
@@ -33,7 +36,8 @@ public struct FittedBody: Codable, Sendable {
 }
 
 /// Fits a body model's pose + shape to a `DetectedPerson`. Model-agnostic: which joint or surface point
-/// each keypoint corresponds to, joint stiffness and hinge limits all come from the model's rig.
+/// each keypoint corresponds to, joint stiffness, hinge and range-of-motion limits and self-collision
+/// capsules all come from the model's rig.
 ///
 /// Stage 1 matches Vision's root-relative 3D joints (pose, shape, orientation, and a free scale —
 /// Vision's metric scale is a 1.8 m reference guess, so body size comes from the shape prior).
@@ -42,6 +46,9 @@ public struct FittedBody: Codable, Sendable {
 public struct BodyFitter {
     public let model: BodyModel
     public var iterations = 40
+    /// Anatomical priors: range-of-motion limits, self-collision, and hinges measured from straight rather
+    /// than from the rest pose. Off reproduces the fitter without them (for comparison).
+    public var anatomicalPriors = true
     /// Keypoints this model can fit, with their target on the body and weight. `.root` is always first.
     let targets: [(joint: BodyJoint, target: BodyModel.Target, weight: Double)]
 
@@ -56,6 +63,70 @@ public struct BodyFitter {
     var transOffset: Int { nPose + model.betaCount }
     var scaleIndex: Int { transOffset + 3 }
     var paramCount: Int { scaleIndex + 1 }
+
+    /// Residual per radian beyond a joint's range of motion: 10° over costs about as much as a keypoint
+    /// 3.5σ off, so the photo can push a joint slightly past its nominal range (the limits are generous
+    /// averages, and people vary) but not into an impossible pose.
+    static let limitWeight = 20.0
+    /// Self-collision: overlap of body-part capsules up to `collisionSlack` is free (soft tissue, and
+    /// capsules are approximate); beyond it, one residual unit per `collisionSigma`.
+    static let collisionSlack = 0.01
+    static let collisionSigma = 0.01
+    /// A limb-depth flip is kept only if it lowers the fit's cost by more than this fraction (and 1).
+    static let flipMargin = 0.97
+
+    /// A reading of Vision's 3D joints with the depth of one or two bones of a limb flipped: a bone
+    /// pointing towards the camera instead of away (or the reverse), with the joints below it carried along.
+    struct LimbFlip {
+        let limb: String
+        let bones: [String]
+        let flipUpper: Bool, flipLower: Bool
+        let joints: (root: Int, middle: Int, end: Int)
+        /// Vision's reading with this flip applied.
+        private(set) var obs: [SIMD3<Double>] = []
+
+        init(limb: String, bones: [String], flipUpper: Bool, flipLower: Bool, joints: (root: Int, middle: Int, end: Int),
+             vision: [SIMD3<Double>]) {
+            (self.limb, self.bones, self.flipUpper, self.flipLower, self.joints) = (limb, bones, flipUpper, flipLower, joints)
+            obs = apply(to: vision)
+        }
+
+        func apply(to o: [SIMD3<Double>]) -> [SIMD3<Double>] {
+            var o = o
+            let (a, b, e) = joints
+            let upper = o[b].z - o[a].z, lower = o[e].z - o[b].z
+            o[b].z = o[a].z + (flipUpper ? -upper : upper)
+            o[e].z = o[b].z + (flipLower ? -lower : lower)
+            return o
+        }
+    }
+
+    /// Depth flips worth trying: bones seen in the photo and pointing clearly out of the image plane
+    /// (more than ~17°), where the two readings differ enough to matter.
+    func limbFlips(_ obs: [SIMD3<Double>], conf2: [Double], w3: [Double]) -> [LimbFlip] {
+        let limbs: [(String, [String], BodyJoint, BodyJoint, BodyJoint)] = [
+            ("leftArm", ["leftUpperArm", "leftForearm"], .leftShoulder, .leftElbow, .leftWrist),
+            ("rightArm", ["rightUpperArm", "rightForearm"], .rightShoulder, .rightElbow, .rightWrist),
+            ("leftLeg", ["leftThigh", "leftShin"], .leftHip, .leftKnee, .leftAnkle),
+            ("rightLeg", ["rightThigh", "rightShin"], .rightHip, .rightKnee, .rightAnkle),
+        ]
+        var out: [LimbFlip] = []
+        for (limb, names, ja, jb, je) in limbs {
+            guard let a = targets.firstIndex(where: { $0.joint == ja }), let b = targets.firstIndex(where: { $0.joint == jb }),
+                  let e = targets.firstIndex(where: { $0.joint == je }),
+                  conf2[b] > 0.3, conf2[e] > 0.3, w3[b] > 0, w3[e] > 0 else { continue }
+            func outOfPlane(_ p: Int, _ q: Int) -> Bool {
+                let d = obs[q] - obs[p]
+                return abs(d.z) > 0.3 * simd_length(d)
+            }
+            let upper = outOfPlane(a, b), lower = outOfPlane(b, e)
+            for (fu, fl) in [(true, false), (false, true), (true, true)] where (!fu || upper) && (!fl || lower) {
+                let bones = (fu ? [names[0]] : []) + (fl ? [names[1]] : [])
+                out.append(LimbFlip(limb: limb, bones: bones, flipUpper: fu, flipLower: fl, joints: (a, b, e), vision: obs))
+            }
+        }
+        return out
+    }
 
     /// How much each keypoint counts.
     static func weight(_ j: BodyJoint) -> Double {
@@ -89,7 +160,9 @@ public struct BodyFitter {
                     refineIterations: Int? = nil) -> FittedBody {
         let warm = warmStart.flatMap { $0.model == model.info.id && $0.pose.count == model.jointCount ? $0 : nil }
         let obs3 = targets.map { person.joints3D[$0.joint.rawValue] }
-        let obsRel = obs3.map { $0 - obs3[0] }
+        let visionRel = obs3.map { $0 - obs3[0] }
+        // Vision's root-relative 3D joints, or a reading of them with some limb depths flipped (see below).
+        var obsRel = visionRel
         let obs2 = targets.map { person.joints2D[$0.joint.rawValue] }
         let conf2 = targets.map { person.confidence2D[$0.joint.rawValue] }
         // User-edited joints: trust the dragged 2D position, drop Vision's (evidently wrong) 3D estimate.
@@ -121,18 +194,31 @@ public struct BodyFitter {
         if let agePrior { for b in 0..<model.betaCount { x[betaOffset + b] = agePrior.mean[b] } }
         x[0..<3] = ArraySlice(initialOrientation(observedRelative: obsRel).scalars)
 
-        func priorResiduals(_ x: [Double], into r: inout [Double]) {
+        /// Pose, shape and anatomical priors. `kin`: the skeleton at `x`, for self-collision (callers have it).
+        func priorResiduals(_ x: [Double], _ kin: BodyModel.Kinematics, anatomical: Bool = true, into r: inout [Double]) {
+            let anatomical = anatomical && anatomicalPriors
             for j in 1..<model.jointCount {
                 let s = model.stiffness[j]
                 for d in 0..<3 { r.append(s * (x[j * 3 + d] - mean[j][d])) }
             }
             // Hinge limits (knees, elbows, fingers): no twist or sideways bend beyond the default pose,
-            // no hyperextension.
+            // no hyperextension past straight, no flexion past the joint's range.
             for h in model.hinges {
                 let a = SIMD3(x[h.joint * 3], x[h.joint * 3 + 1], x[h.joint * 3 + 2])
                 let d = a - mean[h.joint]
+                let flex = (anatomical ? h.restFlex : 0) + simd_dot(a, h.flexAxis)
                 r += [h.twist * simd_dot(d, h.twistAxis), h.side * simd_dot(d, h.sideAxis),
-                      h.hyper * min(0, simd_dot(a, h.flexAxis))]
+                      h.hyper * min(0, flex), anatomical ? Self.limitWeight * max(0, flex - h.maxFlex) : 0]
+            }
+            // Range of motion of ball joints (hips, shoulders, spine, neck, wrists, ankles): free inside
+            // the anatomical range, steeply penalised beyond it.
+            for l in anatomical ? model.limits : [] {
+                let e = l.excess(SIMD3(x[l.joint * 3], x[l.joint * 3 + 1], x[l.joint * 3 + 2]))
+                r += [Self.limitWeight * e.swing, Self.limitWeight * e.twist]
+            }
+            // Self-collision: body parts (capsules inside the flesh) mustn't pass through each other.
+            for pen in (anatomical ? model.penetrations(kin) : []) {
+                r.append(max(0, pen - Self.collisionSlack) / Self.collisionSigma)
             }
             if let agePrior, let age {
                 for b in 0..<model.betaCount {
@@ -169,25 +255,6 @@ public struct BodyFitter {
         let movable = (0..<model.jointCount).filter { $0 == 0 || (model.stiffness[$0] < 6 && !fingers.contains($0)) }
         let poseParams = movable.flatMap { j in (0..<3).map { j * 3 + $0 } }
         let stage1 = poseParams + Array(betaOffset..<transOffset) + [scaleIndex]
-        if let warm {
-            for (j, a) in warm.pose.enumerated() { x[j * 3] = a.x; x[j * 3 + 1] = a.y; x[j * 3 + 2] = a.z }
-            for (b, v) in warm.betas.enumerated() where b < model.betaCount { x[betaOffset + b] = v }
-            x[transOffset..<transOffset + 3] = ArraySlice(warm.translation.scalars)
-            // Vision's scale isn't stored with a fit; least-squares it from the current skeleton.
-            let pts = targetPoints(x).points
-            var num = 0.0, den = 0.0
-            for i in 1..<pts.count where w3[i] > 0 {
-                num += simd_dot(pts[i] - pts[0], obsRel[i]); den += simd_length_squared(obsRel[i])
-            }
-            if num > 0, den > 0 { x[scaleIndex] = log(num / den) }
-        } else {
-            x = LevenbergMarquardt.minimize(x, active: stage1, iterations: iterations) { x in
-                var r: [Double] = []
-                residuals3D(targetPoints(x).points, x, sigma: 0.03, into: &r)
-                priorResiduals(x, into: &r)
-                return r
-            }
-        }
 
         // Metric depth (LiDAR/TrueDepth): the torso's measured distance fixes the body's distance, and so
         // its real size. The map measures the body's front surface; torso joints sit ~8 cm behind it.
@@ -215,28 +282,15 @@ public struct BodyFitter {
             mono?.residuals(pts, tz: x[transOffset + 2], into: &r)
         }
 
-        // Stage 2: translation (closed form), then pose + translation against the 2D keypoints.
-        if warm == nil {
-            let pts1 = targetPoints(x).points
-            let t0 = solveTranslation(points: pts1, observed: obs2, weights: conf2, f: f, c: c)
-                // Fallback: Vision's own root position. Its camera-relative *translation* reports depth with the
-                // opposite sign to its root-relative joints (checked against ground truth in armature-selftest).
-                ?? (SIMD3(obs3[0].x, obs3[0].y, abs(obs3[0].z)) - pts1[0])
-            x[transOffset..<transOffset + 3] = ArraySlice(t0.scalars)
-        }
-
         let sigma2D = 0.015 * personPx
         // With metric depth, body size is observable: let the shape adjust too.
         let freeShape = useDepth || mono?.freeShape == true
         let stage2 = poseParams + Array(transOffset..<transOffset + 3)
             + (freeShape ? Array(betaOffset..<betaOffset + model.betaCount) : [])
-        if useDepth { x[transOffset + 2] += measuredDepth - torsoDepth(x) }
-        if let mono, mono.absolute {
-            x[transOffset + 2] += mono.referenceDepth - mono.bodyReference(targetPoints(x).points, tz: x[transOffset + 2])
-        }
-        x = LevenbergMarquardt.minimize(x, active: stage2, iterations: warm == nil ? iterations : (refineIterations ?? 10)) { x in
+        /// Stage 2's residuals. `threeD` is the term for Vision's 3D joints.
+        func stage2Residuals(_ x: [Double], threeD: ([SIMD3<Double>], [Double], inout [Double]) -> Void) -> [Double] {
             var r: [Double] = []
-            let pts = targetPoints(x).points
+            let (pts, kin) = targetPoints(x)
             let t = SIMD3(x[transOffset], x[transOffset + 1], x[transOffset + 2])
             for (i, p) in pts.enumerated() {
                 let q = p + t
@@ -245,11 +299,109 @@ public struct BodyFitter {
                 let e = (u - obs2[i]) * (w2[i] * conf2[i] / sigma2D)
                 r += [e.x, e.y]
             }
-            residuals3D(pts, x, sigma: 0.08, into: &r)
+            threeD(pts, x, &r)
             pinResiduals(pts, x, into: &r)
-            priorResiduals(x, into: &r)
+            priorResiduals(x, kin, into: &r)
             depthResiduals(x, pts, into: &r)
             return r
+        }
+        /// Stage 2: pose + translation against the 2D keypoints, from the body's measured or estimated distance.
+        func runStage2(_ x0: [Double], iterations n: Int) -> [Double] {
+            var x = x0
+            if useDepth { x[transOffset + 2] += measuredDepth - torsoDepth(x) }
+            if let mono, mono.absolute {
+                x[transOffset + 2] += mono.referenceDepth - mono.bodyReference(targetPoints(x).points, tz: x[transOffset + 2])
+            }
+            return LevenbergMarquardt.minimize(x, active: stage2, iterations: n) { x in
+                stage2Residuals(x) { pts, x, r in residuals3D(pts, x, sigma: 0.08, into: &r) }
+            }
+        }
+        /// Stages 1 and 2 from scratch, against the current `obsRel`. `anatomicalStage1: false` leaves the
+        /// range-of-motion and collision terms out of stage 1, so it can pass through poses they forbid
+        /// on its way to the right one (they'd otherwise act as walls between it and its target).
+        func solve(_ x0: [Double], anatomicalStage1: Bool = true) -> [Double] {
+            // Stage 1: articulated pose, shape, orientation and Vision's scale from root-relative 3D joints.
+            var x = LevenbergMarquardt.minimize(x0, active: stage1, iterations: iterations) { x in
+                var r: [Double] = []
+                let (pts, kin) = targetPoints(x)
+                residuals3D(pts, x, sigma: 0.03, into: &r)
+                priorResiduals(x, kin, anatomical: anatomicalStage1, into: &r)
+                return r
+            }
+            // Translation (closed form).
+            let pts1 = targetPoints(x).points
+            let t0 = solveTranslation(points: pts1, observed: obs2, weights: conf2, f: f, c: c)
+                // Fallback: Vision's own root position. Its camera-relative *translation* reports depth with the
+                // opposite sign to its root-relative joints (checked against ground truth in armature-selftest).
+                ?? (SIMD3(obs3[0].x, obs3[0].y, abs(obs3[0].z)) - pts1[0])
+            x[transOffset..<transOffset + 3] = ArraySlice(t0.scalars)
+            return runStage2(x, iterations: iterations)
+        }
+
+        var flipped: [String] = []
+        if let warm {
+            for (j, a) in warm.pose.enumerated() { x[j * 3] = a.x; x[j * 3 + 1] = a.y; x[j * 3 + 2] = a.z }
+            for (b, v) in warm.betas.enumerated() where b < model.betaCount { x[betaOffset + b] = v }
+            x[transOffset..<transOffset + 3] = ArraySlice(warm.translation.scalars)
+            // Vision's scale isn't stored with a fit; least-squares it from the current skeleton.
+            let pts = targetPoints(x).points
+            var num = 0.0, den = 0.0
+            for i in 1..<pts.count where w3[i] > 0 {
+                num += simd_dot(pts[i] - pts[0], obsRel[i]); den += simd_length_squared(obsRel[i])
+            }
+            if num > 0, den > 0 { x[scaleIndex] = log(num / den) }
+            x = runStage2(x, iterations: refineIterations ?? 10)
+        } else {
+            let x0 = x
+            x = solve(x0)
+            // Extra starts (skipped once the user has edited the person: their edits are the evidence then,
+            // and the re-fit when a drag ends should stay quick).
+            let multiStart = anatomicalPriors && !person.isEdited
+            // A second start with an unconstrained stage 1: see `solve`. Kept if it scores better (below).
+            let xFree = multiStart ? solve(x0, anatomicalStage1: false) : nil
+            // Depth ambiguity: a limb bone pointing towards the camera projects like one pointing away, and
+            // Vision's 3D sometimes picks wrong (legs bent backwards). Re-fit with each such bone's depth
+            // flipped and keep whichever fits the photo best, judging the 3D term by whichever reading of
+            // each joint's depth the body is nearest, so Vision's own guess gets no head start.
+            let hypotheses = multiStart ? limbFlips(obsRel, conf2: conf2, w3: w3) : []
+            if multiStart {
+                let readings = [obsRel] + hypotheses.map(\.obs)
+                func score(_ x: [Double]) -> Double {
+                    stage2Residuals(x) { pts, x, r in
+                        let s = exp(x[scaleIndex])
+                        for i in 1..<pts.count {
+                            let d = readings.map { simd_length_squared((pts[i] - pts[0]) - s * $0[i]) }.min()!
+                            r.append(d.squareRoot() * w3[i] / 0.08)
+                        }
+                    }.reduce(0) { $0 + $1 * $1 }
+                }
+                let original = obsRel
+                var best = (x: x, score: score(x), obs: obsRel, names: [String]())
+                if let xFree, case let sf = score(xFree), sf < best.score { best = (xFree, sf, obsRel, []) }
+                // A flip must fit clearly better than Vision's own reading, not just as well.
+                let bar = best.score * Self.flipMargin - 1
+                var improving: [(flip: LimbFlip, score: Double)] = []
+                for h in hypotheses {
+                    obsRel = h.obs
+                    let xh = solve(x0)
+                    let sh = score(xh)
+                    if sh < bar {
+                        improving.append((h, sh))
+                        if sh < best.score { best = (xh, sh, h.obs, h.bones) }
+                    }
+                }
+                // Flips in different limbs are independent: try the best one of each limb together.
+                let perLimb = Dictionary(grouping: improving, by: \.flip.limb).values.compactMap { $0.min { $0.score < $1.score }?.flip }
+                if perLimb.count > 1 {
+                    obsRel = perLimb.reduce(original) { obs, h in h.apply(to: obs) }
+                    let xc = solve(x0)
+                    let sc = score(xc)
+                    if sc < min(best.score, bar) { best = (xc, sc, obsRel, perLimb.flatMap(\.bones)) }
+                }
+                x = best.x
+                obsRel = best.obs
+                flipped = best.names
+            }
         }
 
         // Stage 3: body shape (and placement) from the silhouette, pose held fixed.
@@ -262,10 +414,10 @@ public struct BodyFitter {
                                     // A weak pull toward Vision's 3D: the silhouette can't see depth, so without
                                     // it the trunk and hips drift; stage 2's stronger 8 cm version over-constrains
                                     // (Vision's own 3D is ~18 cm off). Tuned on armature-selftest.
-                                    let pts = targetPoints(x).points
+                                    let (pts, kin) = targetPoints(x)
                                     residuals3D(pts, x, sigma: 0.25, into: &r)
                                     pinResiduals(pts, x, into: &r)
-                                    priorResiduals(x, into: &r)
+                                    priorResiduals(x, kin, into: &r)
                                     depthResiduals(x, pts, into: &r)
                                 })
         }
@@ -275,7 +427,7 @@ public struct BodyFitter {
         let s = exp(x[scaleIndex])
         // 3D error over the joints Vision actually estimated in 3D.
         let with3D = pts.indices.filter { w3[$0] > 0 }
-        let rms3 = sqrt(with3D.map { simd_length_squared((pts[$0] - pts[0]) - s * obsRel[$0]) }.reduce(0, +)
+        let rms3 = sqrt(with3D.map { simd_length_squared((pts[$0] - pts[0]) - s * visionRel[$0]) }.reduce(0, +)
                         / Double(max(with3D.count, 1)))
         // Reprojection error over the keypoints actually seen in the photo.
         let seen = pts.indices.filter { conf2[$0] > 0.2 }
@@ -292,6 +444,8 @@ public struct BodyFitter {
         body.usedDepth = useDepth
         body.silhouetteBefore = overlap?.before
         body.silhouette = overlap?.after
+        body.plausibility = model.plausibility(pose: body.pose, betas: body.betas)
+        body.plausibility?.flippedLimbs = flipped
         return body
     }
 

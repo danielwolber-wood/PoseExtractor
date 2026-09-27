@@ -43,6 +43,8 @@ public final class ArmaturePipeline: @unchecked Sendable {
     public var detector = PoseDetector()
     /// Refine body shape against each person's segmentation mask.
     public var useSilhouette = true
+    /// Range-of-motion limits, self-collision and trying flipped limb depths (see `BodyFitter`). On by default.
+    public var anatomicalPriors = true
     /// Age-estimation model id (see `availableAgeModels`), or nil for none. Estimates condition Anny's
     /// shape on age and are shown for every model.
     public var ageModel: String?
@@ -173,7 +175,8 @@ public final class ArmaturePipeline: @unchecked Sendable {
                       silhouette: Bool = true) throws -> ArmatureResult {
         let body3D = try model(modelID)
         var out = result
-        let fitter = BodyFitter(model: body3D)
+        var fitter = BodyFitter(model: body3D)
+        fitter.anatomicalPriors = anatomicalPriors
         let previous = result.bodies[index]
         var body: FittedBody
         // During a drag the same joints stay edited and the others don't move, so the cue built on the
@@ -221,7 +224,8 @@ public final class ArmaturePipeline: @unchecked Sendable {
             return try body()
         }
         let body3D = try timed("load model") { try model(modelID) }
-        let fitter = BodyFitter(model: body3D)
+        var fitter = BodyFitter(model: body3D)
+        fitter.anatomicalPriors = anatomicalPriors
         var bodies = timed("fit body") {
             // Each fit is independent; run them in parallel.
             var out = [FittedBody?](repeating: nil, count: people.count)
@@ -275,6 +279,7 @@ public enum ArmatureExport {
             let rms3DMetres: Double
             let rms2DPixels: Double
             let silhouette: SilhouetteOverlap?
+            let plausibility: PlausibilityReport?
             let keypoints2D: [String: [Double]]
             let keypointConfidence: [String: Double]
             let editedJoints: [String]
@@ -302,6 +307,7 @@ public enum ArmatureExport {
                 phenotype: (try? pipeline?.model(b.model))??.phenotype(betas: b.betas),
                 betas: b.betas, translation: b.translation.scalars,
                 rms3DMetres: b.rms3D, rms2DPixels: b.rms2D, silhouette: b.silhouette,
+                plausibility: b.plausibility,
                 keypoints2D: Dictionary(uniqueKeysWithValues: BodyJoint.allCases.map {
                     ("\($0)", [p.joints2D[$0.rawValue].x, p.joints2D[$0.rawValue].y])
                 }),

@@ -89,7 +89,19 @@ public final class BodyModel: @unchecked Sendable {
 
     struct RigDescription: Decodable {
         struct TargetSpec: Decodable { let joint: Int?; let mid: [Int]?; let vertices: [[Double]]? }
-        struct Hinge: Decodable { let joint: Int; let child: Int; let flex: [Double]; let twist: Double; let side: Double; let hyper: Double }
+        struct Hinge: Decodable {
+            let joint: Int; let child: Int; let flex: [Double]; let twist: Double; let side: Double; let hyper: Double
+            let restFlex: Double?; let maxFlex: Double?
+        }
+        struct Limit: Decodable {
+            let joint: Int; let child: Int?; let neutral: [Double]; let flexDir: [Double]; let abductDir: [Double]
+            let flex: Double; let extend: Double; let abduct: Double; let adduct: Double; let twist: Double
+        }
+        struct Collision: Decodable {
+            struct Capsule: Decodable { let name: String; let a: Int; let b: Int; let offsetA: [Double]; let offsetB: [Double]; let radius: Double }
+            let capsules: [Capsule]
+            let pairs: [[Int]]
+        }
         struct Phenotype: Decodable {
             struct AgeShape: Decodable { let ages: [Double]; let mean: [[Double]]; let std: [[Double]] }
             let labels: [String]
@@ -108,6 +120,9 @@ public final class BodyModel: @unchecked Sendable {
         let targets: [String: TargetSpec]
         let stiffness: [Double]
         let hinges: [Hinge]
+        /// Range-of-motion limits and self-collision capsules (absent in models converted before they existed).
+        let limits: [Limit]?
+        let collision: Collision?
         let silhouetteJoints: [Int]
         let phenotype: Phenotype?
         let poseMean: [[Double]]?
@@ -130,6 +145,9 @@ public final class BodyModel: @unchecked Sendable {
         let joint: Int
         let flexAxis: SIMD3<Double>, twistAxis: SIMD3<Double>, sideAxis: SIMD3<Double>
         let twist: Double, side: Double, hyper: Double
+        /// Flexion already in the rest pose (Anny's A-pose has bent elbows) and the most the joint bends,
+        /// both measured from straight (radians).
+        let restFlex: Double, maxFlex: Double
     }
 
     // MARK: Data
@@ -156,8 +174,11 @@ public final class BodyModel: @unchecked Sendable {
     let targets: [BodyJoint: Target]
     let stiffness: [Double]
     let hinges: [Hinge]
+    let limits: [JointLimit]
+    let capsules: [Capsule]
+    let collisionPairs: [(Int, Int)]
     let silhouetteJoints: [Int]
-    private let semantic: [String: RigDescription.JointOrChain]
+    let semantic: [String: RigDescription.JointOrChain]
     private let phenotypeModel: RigDescription.Phenotype?
 
     var poseFeatureCount: Int { 9 * (jointCount - 1) }
@@ -234,8 +255,14 @@ public final class BodyModel: @unchecked Sendable {
             let bone = simd_normalize(rest[h.child] - rest[h.joint])
             let flex = simd_normalize(simd_cross(bone, SIMD3(h.flex[0], h.flex[1], h.flex[2])))
             return Hinge(joint: h.joint, flexAxis: flex, twistAxis: bone, sideAxis: simd_normalize(simd_cross(flex, bone)),
-                         twist: h.twist, side: h.side, hyper: h.hyper)
+                         twist: h.twist, side: h.side, hyper: h.hyper, restFlex: h.restFlex ?? 0, maxFlex: h.maxFlex ?? .infinity)
         }
+        limits = (rig.limits ?? []).map { JointLimit($0, rest: rest) }
+        let v3 = { (a: [Double]) in SIMD3(a[0], a[1], a[2]) }
+        capsules = (rig.collision?.capsules ?? []).map {
+            Capsule(name: $0.name, a: $0.a, b: $0.b, offsetA: v3($0.offsetA), offsetB: v3($0.offsetB), radius: $0.radius)
+        }
+        collisionPairs = (rig.collision?.pairs ?? []).map { ($0[0], $0[1]) }
     }
 
     /// A semantic joint's index (e.g. "leftShoulder", "pelvis"); for chains, the first joint.

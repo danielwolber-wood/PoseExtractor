@@ -21,6 +21,7 @@ let package = Package(
         .executableTarget(name: "armature", dependencies: ["ArmatureCore"]),
         .executableTarget(name: "ArmatureApp", dependencies: ["ArmatureCore"]),
         .executableTarget(name: "armature-selftest", dependencies: ["ArmatureCore"]),
+        .executableTarget(name: "armature-eval", dependencies: ["ArmatureCore"]),
         .executableTarget(name: "armature-quality-selftest", dependencies: ["ArmatureCore"]),
         .executableTarget(name: "armature-depth-selftest", dependencies: ["ArmatureCore"]),
     ]

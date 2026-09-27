@@ -34,6 +34,44 @@ Code: `Sources/ArmatureCore/Fitting/BodyFitter.swift`.
    - In the app, this stage (about 100 ms) is skipped while you drag and runs when you let go.
    - For debugging, set `ARMATURE_DEBUG_MASK=/tmp/m.ppm` to dump the mask with the body before (red) and after (green).
 9. **Priors:** the pose prior holds joints Vision can't see (hands, feet, collars, neck twist) near rest. It also spreads spine bending across the three spine joints and restricts knees and elbows to hinge motion.
+10. **Anatomical limits:** see [Anatomical limits](#anatomical-limits) below.
+
+## Anatomical limits
+
+Fits used to end up in impossible poses: legs twisted backwards, heads turned 180°, forearms through the
+chest. Three things now rule those out. `BodyFitter.anatomicalPriors` (on by default; the CLI's
+`--no-anatomical-limits` turns it off) switches all three.
+
+- **Range of motion.** Hips, shoulders, collars, spine, neck, head, wrists and ankles get a swing-twist
+  limit. The swing limit is an ellipse in each quadrant of (flexion, abduction) around an anatomical neutral
+  direction, plus a symmetric twist limit about the bone. Knees, elbows and fingers get a maximum flexion,
+  and hyperextension is measured from straight rather than from the rest pose. (Anny's A-pose has elbows
+  bent ~40°, which it previously couldn't straighten.) The limits are generous versions of clinical
+  range-of-motion tables, in `tools/convert_models.py`. The spine and neck ranges are for the whole chain,
+  shared over however many joints the model has. Inside the range there is no cost; beyond it, 20 residual
+  units per radian.
+- **Self-collision.** About 17 capsules (trunk segments, head, upper arm, forearm, hand, thigh, shin, foot)
+  are inscribed in the flesh, so ordinary contact such as hands on hips doesn't count. Overlap beyond 1 cm
+  is penalised. Pairs already touching in the rest pose, and legs against the trunk, aren't tested.
+- **Limb-depth flips.** A bone pointing towards the camera projects like one pointing away, and Vision's
+  3D sometimes picks wrong. For each limb bone that is seen in the photo and clearly out of the image
+  plane, stages 1–2 are re-run with its depth flipped. The flip is kept if it lowers the stage-2 cost by
+  more than 3%. When comparing, each joint's 3D term uses whichever depth reading the body is nearest, so
+  Vision's guess gets no head start. Flips in different limbs are also tried together. Warm-started
+  (interactive) re-fits skip this, and so do fits of people the user has edited.
+- **An unconstrained start.** Limits and collision penalties can act as walls between Vision's starting
+  pose and the right one; for example, a leg may need to pass through the other on its way. So stages 1–2
+  also run once with stage 1 free of them (stage 2 still has them), and the better-scoring of the two is
+  kept.
+
+Each fit carries a `plausibility` report (also in the JSON export). It lists joints still past their range,
+body parts still overlapping, and which limbs were flipped. `BodyModel.plausibility(pose:betas:)` checks
+any pose.
+
+`armature-eval <folder>` compares fits with and without these priors on real photos. It uses the same
+detections for both, and reports impossible poses, 2D error, silhouette IoU and time.
+`armature-selftest --plausibility-only` checks the limits on known good and broken poses.
+
 
 Vision's 3D joints sit in slightly different anatomical places than SMPL's; hips are the worst, about 9 cm wider apart. Those joints are down-weighted rather than trusted.
 

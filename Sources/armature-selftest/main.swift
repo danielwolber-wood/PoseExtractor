@@ -7,19 +7,25 @@ import simd
 import UniformTypeIdentifiers
 
 // Round-trip regression test for any body model:
-//   armature-selftest [--model <id>] [--pose raise|reach|walk] [--age <years>] [--out <dir>]
+//   armature-selftest [--model <id>] [--pose raise|reach|walk] [--yaw <degrees>] [--age <years>] [--out <dir>]
+//                     [--no-priors] [--plausibility-only]
+// --yaw turns the body about the vertical (default 20°); --no-priors fits without the anatomical priors.
 // --age (models with an age-aware shape space, i.e. Anny): the truth body is that age's average shape,
 // and the fit is compared with and without being told the age.
 // Poses the model in a known asymmetric pose with a heavier-than-average build, renders it as clay,
 // runs the whole pipeline on the render, and reports how well pose, shape, placement, the silhouette
 // stage, keypoint editing, metric depth and (synthetic) monocular depth recover the truth.
-// Exits non-zero if a monocular-depth guarantee fails (embedded depth priority, no harm from bad depth,
-// edited joints kept).
+// Exits non-zero if a check fails: range-of-motion and self-collision checks on known good and broken
+// poses, or a monocular-depth guarantee (embedded depth priority, no harm from bad depth, edited joints kept).
+// --plausibility-only runs just the pose checks (no Vision, a second or so).
 
 var modelID = ArmaturePipeline.defaultModelID
 var poseName = "raise"
 var truthAge: Double?
 var outDir = URL(fileURLWithPath: "out/selftest")
+var plausibilityOnly = false
+var yawDegrees = 20.0
+var anatomicalPriors = true
 var argv = Array(CommandLine.arguments.dropFirst())
 while !argv.isEmpty {
     let a = argv.removeFirst()
@@ -27,14 +33,19 @@ while !argv.isEmpty {
     if a == "--pose", !argv.isEmpty { poseName = argv.removeFirst() }
     if a == "--age", !argv.isEmpty { truthAge = Double(argv.removeFirst()) }
     if a == "--out", !argv.isEmpty { outDir = URL(fileURLWithPath: argv.removeFirst()) }
+    if a == "--plausibility-only" { plausibilityOnly = true }
+    if a == "--yaw", !argv.isEmpty { yawDegrees = Double(argv.removeFirst()) ?? yawDegrees }
+    if a == "--no-priors" { anatomicalPriors = false }
 }
 guard let modelsURL = ArmaturePipeline.defaultModelsDirectory() else { print("models not found"); exit(1) }
-outDir.appendPathComponent(modelID + (poseName == "raise" ? "" : "_" + poseName) + (truthAge.map { "_age\(Int($0))" } ?? ""))
+outDir.appendPathComponent(modelID + (poseName == "raise" ? "" : "_" + poseName) + (yawDegrees == 20 ? "" : "_yaw\(Int(yawDegrees))")
+                           + (truthAge.map { "_age\(Int($0))" } ?? ""))
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
 let pipeline = ArmaturePipeline(modelsDirectory: modelsURL)
 // Installed depth models must not change the reference numbers; monocular depth is tested explicitly below.
 pipeline.monocularDepthMode = .disabled
+pipeline.anatomicalPriors = anatomicalPriors
 let model = try pipeline.model(modelID)
 print("model: \(model.info.displayName) — \(model.jointCount) joints, \(model.vertexCount) vertices, \(model.betaCount) shape coefficients")
 
@@ -46,8 +57,8 @@ func joint(_ name: String) -> Int {
 // MARK: Ground truth
 
 var pose = model.defaultPose
-// Upright in camera space (180° about x), then turned 20° about the vertical.
-let orient = simd_quatd(angle: 0.35, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: .pi, axis: SIMD3(1, 0, 0))
+// Upright in camera space (180° about x), then turned about the vertical (20° by default).
+let orient = simd_quatd(angle: yawDegrees * .pi / 180, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: .pi, axis: SIMD3(1, 0, 0))
 pose[joint("pelvis")] = orient.axis * orient.angle
 let rest = model.restJoints(betas: [])
 /// Local rotation pointing a limb (from `j` to `child`) in a model-frame direction (parents are at rest).
@@ -88,6 +99,51 @@ if let a = truthAge {
     betas = prior.mean
 }
 let truth = FittedBody(model: modelID, pose: pose, betas: betas, translation: SIMD3(0, 0.1, 4.2))
+
+// MARK: Plausibility (no Vision)
+
+// The truth pose is within every range-of-motion limit and collision-free; deliberately broken poses
+// are caught by the right check.
+var checksFailed = false
+func expect(_ ok: Bool, _ what: String) {
+    print("  \(ok ? "ok  " : "FAIL") \(what)")
+    if !ok { checksFailed = true }
+}
+func describe(_ r: PlausibilityReport) -> String {
+    (r.beyondLimits.sorted { $0.key < $1.key }.map { String(format: "%@ +%.0f°", $0.key, $0.value) }
+     + r.penetrations.sorted { $0.key < $1.key }.map { String(format: "%@ %.1f cm", $0.key, $0.value) }
+     + r.flippedLimbs.map { "flipped \($0)" }).joined(separator: ", ")
+}
+print("plausibility:")
+let truthReport = model.plausibility(pose: pose, betas: betas)
+expect(truthReport.isClean, "the \(poseName) pose passes [\(describe(truthReport))]")
+/// A standing body with one edit; nil fields in `expected` mean "don't care".
+func broken(_ label: String, limit: String? = nil, collision: Bool = false, _ edit: (inout [SIMD3<Double>]) -> Void) {
+    var p = model.defaultPose
+    edit(&p)
+    let r = model.plausibility(pose: p, betas: betas)
+    let ok = (limit.map { r.beyondLimits[$0] != nil } ?? r.beyondLimits.isEmpty) && (collision ? !r.penetrations.isEmpty : r.penetrations.isEmpty)
+    expect(ok, "\(label) → [\(describe(r))]")
+}
+let rotY = { (a: Double) in SIMD3(0, a, 0) }
+broken("knee bent forwards 60°", limit: "leftKnee") { $0[joint("leftKnee")] = model.flexAxis(joint: joint("leftKnee"))! * -1.05 }
+broken("leg twisted backwards", limit: "leftHip") { $0[joint("leftHip")] = rotY(.pi) }
+broken("thigh swung 90° backwards", limit: "leftHip") { $0[joint("leftHip")] = SIMD3(.pi / 2, 0, 0) }
+broken("head turned 180°", limit: "head") { p in
+    for j in model.chain("neck") + [joint("head")] { p[j] = rotY(.pi / Double(model.chain("neck").count + 1)) }
+}
+broken("thighs crossed through each other", collision: true) { p in
+    p[joint("leftHip")] = SIMD3(0, 0, -0.5); p[joint("rightHip")] = SIMD3(0, 0, 0.5)
+}
+broken("forearm through the belly", collision: true) { p in
+    // Upper arm down at the side, turned 90° inwards, elbow bent 90°: the forearm points into the body.
+    let s = joint("leftShoulder"), e = joint("leftElbow")
+    let q = simd_quatd(from: simd_normalize(rest[e] - rest[s]), to: SIMD3(0.05, -1, -0.05))
+        * simd_quatd(angle: .pi / 2, axis: simd_normalize(rest[e] - rest[s]))
+    p[s] = q.axis * q.angle
+    p[e] = model.flexAxis(joint: e)! * 1.57
+}
+if plausibilityOnly { exit(checksFailed ? 1 : 0) }
 let mesh = model.vertices(pose: pose, betas: betas, translation: truth.translation)
 if let p = model.phenotype(betas: betas) {
     print(String(format: "truth body: %.2f m, ~%.0f years", model.height(betas: betas), p["ageYears"] ?? 0))
@@ -146,6 +202,7 @@ let lwFit = fitK.joints[joint("leftWrist")] - fitK.joints[joint("pelvis")]
 let handOK = simd_distance(lwFit, gtK.joints[joint("leftWrist")] - gtK.joints[joint("pelvis")])
     < simd_distance(lwFit, gtK.joints[joint("rightWrist")] - gtK.joints[joint("pelvis")])
 print("handedness OK: \(handOK)")
+if let p = fit.plausibility { print("fit plausibility: \(p.isClean && p.flippedLimbs.isEmpty ? "clean" : describe(p))") }
 
 pipeline.useSilhouette = false
 let noSil = try pipeline.fit(people: result.people, image: image, model: modelID).bodies[0]
@@ -266,11 +323,6 @@ for (label, b) in [("without depth", fit), ("with depth   ", withDepth)] {
 // Monocular maps made from the true z-buffer, with the errors real models make: an unknown scale and
 // shift, blurred occlusion edges (depth bleeding between body and background), a low-frequency warp and
 // noise. Fitted on the same detections as the no-depth fit, so only the depth differs.
-var depthChecksFailed = false
-func expect(_ ok: Bool, _ what: String) {
-    print("  \(ok ? "ok  " : "FAIL") \(what)")
-    if !ok { depthChecksFailed = true }
-}
 var rng: UInt64 = 0x9E3779B97F4A7C15
 func noise() -> Float {  // deterministic, uniform in [-1, 1]
     rng = rng &* 6364136223846793005 &+ 1442695040888963407
@@ -383,4 +435,4 @@ expect(wristError(monoLive) <= wristError(live) + 2, "monocular depth keeps the 
 let scene = result.makeScene(style: ClayStyle())
 if let img = scene.render(.photo) { try ArmatureExport.writePNG(img, to: outDir.appendingPathComponent("recovered_photo.png")) }
 if let img = scene.render(.studio) { try ArmatureExport.writePNG(img, to: outDir.appendingPathComponent("recovered_studio.png")) }
-if depthChecksFailed { print("monocular depth checks FAILED"); exit(1) }
+if checksFailed { print("self-test checks FAILED"); exit(1) }
